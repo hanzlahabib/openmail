@@ -23,3 +23,9 @@ pub trait MailOrganizer: Send + Sync {
     async fn set_flagged(&self, reference: &MessageRef, flagged: bool) -> Result<()>;
     async fn move_message(&self, reference: &MessageRef, dest_folder: &str) -> Result<MessageRef>;
 }
+
+/// Resolves a `CredentialRef` to a secret at the moment of use (never cached in
+/// config structs). Implemented by `openmail-security`; tests use in-memory fakes.
+pub trait SecretSource: Send + Sync {
+    fn resolve(&self, reference: &crate::config::CredentialRef) -> Result<secrecy::SecretString>;
+}
