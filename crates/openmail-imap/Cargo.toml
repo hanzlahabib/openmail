@@ -12,6 +12,8 @@ ammonia.workspace = true
 async-imap.workspace = true
 base64.workspace = true
 futures.workspace = true
+html5ever = "0.40"
+markup5ever_rcdom = "0.40"
 mail-parser.workspace = true
 rustls-native-certs.workspace = true
 secrecy.workspace = true
@@ -20,6 +22,8 @@ time.workspace = true
 tokio.workspace = true
 tokio-rustls.workspace = true
 tracing.workspace = true
+unicode-general-category = "1"
+unicode-normalization = "0.1"
 webpki-roots.workspace = true
 
 [dev-dependencies]

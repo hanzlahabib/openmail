@@ -72,9 +72,29 @@ impl From<ImapError> for Error {
     }
 }
 
-/// Keeps server text short and single-line before it is surfaced.
+/// Longest server-supplied text surfaced in an error: enough for a human-readable
+/// reason, too short to smuggle a payload.
+const MAX_SERVER_TEXT_CHARS: usize = 200;
+
+/// Server text is attacker-controlled: single line, no invisible/bidi characters, bounded.
 fn sanitize(s: &str) -> String {
-    s.chars().filter(|c| !c.is_control()).take(120).collect()
+    crate::hygiene::bounded_remote_text(s, MAX_SERVER_TEXT_CHARS)
 }
 
 pub type ImapResult<T> = Result<T, ImapError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn server_rejection_text_is_bounded_and_clean() {
+        let raw = format!("NO bad\r\n* INJECT\u{202E}\u{200B}{}", "z".repeat(1000));
+        let ImapError::Rejected(m) = ImapError::from(async_imap::error::Error::No(raw)) else {
+            panic!("expected Rejected");
+        };
+        assert_eq!(m.chars().count(), MAX_SERVER_TEXT_CHARS);
+        assert!(m.starts_with("NO bad* INJECT"), "{m}");
+        assert!(!m.contains(['\r', '\n', '\u{202E}', '\u{200B}']));
+    }
+}

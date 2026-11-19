@@ -4,6 +4,8 @@ pub mod backend;
 pub mod conn;
 pub mod cursor;
 pub mod error;
+pub mod html;
+pub mod hygiene;
 pub mod mime;
 pub mod ops;
 pub mod paging;
