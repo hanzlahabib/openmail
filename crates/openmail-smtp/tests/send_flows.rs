@@ -15,8 +15,8 @@ use openmail_core::model::Address;
 use openmail_core::{ErrorCode, Result};
 use openmail_smtp::outbox::OutboxState;
 use openmail_smtp::{
-    ApprovalProof, OutboxStore, Outcome, SendOutcome, SendRequest, SmtpClient, SmtpOptions,
-    SqliteOutbox,
+    ApprovalConsumer, ApprovalProof, OutboxStore, Outcome, SendOutcome, SendRequest,
+    SendRequestDescriptor, SmtpClient, SmtpOptions, SqliteOutbox,
 };
 use secrecy::SecretString;
 
@@ -71,8 +71,22 @@ fn request(key: &str) -> SendRequest {
     }
 }
 
-fn proof(r: &SendRequest) -> ApprovalProof {
-    ApprovalProof::new(r.content_hash(), "approval-1")
+/// Stand-in for the security layer: approves whatever descriptor it is asked about.
+struct AllowAll;
+
+impl ApprovalConsumer for AllowAll {
+    fn consume(
+        &self,
+        _principal: &str,
+        _descriptor: &SendRequestDescriptor,
+        _token: Option<&str>,
+    ) -> openmail_core::Result<()> {
+        Ok(())
+    }
+}
+
+fn proof_for(acct: &AccountConfig, r: &SendRequest) -> ApprovalProof {
+    ApprovalProof::obtain(&AllowAll, "test", &acct.id, r, Some("approval-1")).unwrap()
 }
 
 type Client = SmtpClient<SqliteOutbox, FixedSecret>;
@@ -90,8 +104,8 @@ fn client(db: &Path, server: &Server, password: &'static str) -> Client {
 }
 
 async fn send(c: &Client, acct: &AccountConfig, r: SendRequest) -> Result<SendOutcome> {
-    let p = proof(&r);
-    c.send(acct, r, &p).await
+    let p = proof_for(acct, &r);
+    c.send(acct, r, p).await
 }
 
 fn db() -> (tempfile::TempDir, std::path::PathBuf) {
@@ -409,13 +423,13 @@ async fn approval_must_match_content_and_sender_must_be_own_identity() {
     let c = client(&path, &srv, "s3cret");
 
     let approved = request("k-appr");
-    let stale = ApprovalProof::new(approved.content_hash(), "t");
+    let stale = proof_for(&acct, &approved);
     let mut tampered = request("k-appr");
     tampered.bcc.push(Address {
         name: None,
         email: "extra@example.net".into(),
     });
-    let err = c.send(&acct, tampered, &stale).await.unwrap_err();
+    let err = c.send(&acct, tampered, stale).await.unwrap_err();
     assert_eq!(err.code(), ErrorCode::ApprovalInvalid);
 
     let mut spoof = request("k-spoof");

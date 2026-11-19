@@ -8,6 +8,8 @@ license.workspace = true
 
 [dependencies]
 openmail-core.workspace = true
+# Dependency direction: security -> smtp (implements smtp's ApprovalConsumer); smtp never depends on security.
+openmail-smtp.workspace = true
 getrandom.workspace = true
 keyring.workspace = true
 rusqlite.workspace = true

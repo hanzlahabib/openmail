@@ -14,6 +14,7 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use openmail_core::ids::AccountId;
 use openmail_core::{Error, ErrorCode, Result};
+use openmail_smtp::{ApprovalConsumer, SendRequestDescriptor};
 use sha2::{Digest, Sha256};
 
 use crate::approval_store::{ApprovalRecord, ApprovalStore, ConsumeOutcome};
@@ -297,6 +298,39 @@ impl<S: ApprovalStore, C: Clock> ApprovalVerifier<S, C> {
                 Err(invalid())
             }
         }
+    }
+}
+
+impl SendIntent {
+    /// Builds the approval binding from the descriptor smtp derived from the real
+    /// request. The smtp content hash stands in for the body hash, so cc/bcc roles,
+    /// html, references and attachment metadata are bound too, not just text.
+    pub fn from_descriptor(principal: &str, d: &SendRequestDescriptor) -> Result<Self> {
+        let recipients: Vec<&str> = d.recipients().iter().map(String::as_str).collect();
+        let atts: Vec<Sha256Digest> = d
+            .attachment_sha256()
+            .iter()
+            .map(|a| Sha256Digest(*a))
+            .collect();
+        Self::new(
+            principal,
+            d.account().clone(),
+            &recipients,
+            d.subject(),
+            Sha256Digest(*d.content_hash().as_bytes()),
+            &atts,
+        )
+    }
+}
+
+impl<S: ApprovalStore, C: Clock> ApprovalConsumer for ApprovalVerifier<S, C> {
+    fn consume(
+        &self,
+        principal: &str,
+        descriptor: &SendRequestDescriptor,
+        token: Option<&str>,
+    ) -> Result<()> {
+        self.verify_and_consume(token, &SendIntent::from_descriptor(principal, descriptor)?)
     }
 }
 

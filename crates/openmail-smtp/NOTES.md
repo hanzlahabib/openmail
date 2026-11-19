@@ -10,7 +10,7 @@
   `AsyncSmtpConnection` command-by-command to know exactly when DATA starts. Implicit TLS and STARTTLS (required; refuses
   to authenticate or continue unencrypted), rustls + webpki roots (+ optional extra PEM roots; verification cannot be disabled),
   AUTH PLAIN/LOGIN for passwords, XOAUTH2 for `AuthMethod::Oauth2` (lettre supports it; the resolved secret must be an access token).
-- `approval.rs`: opaque `ApprovalProof` (content hash + caller token); only checks hash equality (`ApprovalInvalid` otherwise).
+- `approval.rs`: sealed `ApprovalProof` (T32, fixes F2). No public constructor; only `ApprovalProof::obtain(consumer, principal, account, &request, token)`, which derives a `SendRequestDescriptor` from the real request and runs an `ApprovalConsumer` (verify + atomic consume). `send` takes the proof by value and re-checks account + content hash. Audit trail stores a sha256 prefix of the token, not the bearer id.
 - `outbox.rs` / `sqlite_outbox.rs`: `OutboxStore` trait + SQLite impl (WAL, synchronous=FULL, 0600 file, IMMEDIATE transactions),
   crash recovery on open, `resolve_uncertain`, append-style audit table. See `RECOVERY.md`.
 
@@ -47,3 +47,9 @@
 - No tests against a real provider or a Docker server (only the in-process server); no SIZE-extension enforcement from EHLO.
 - Message drafts (saving to the Drafts folder) belong to the IMAP side; this crate only builds/sends.
 - Idempotency is per `(account, key)` in one SQLite file; two machines with separate files are not coordinated.
+
+## T32 decision: dependency direction (no cycle)
+`openmail-smtp` defines `ApprovalConsumer`; `openmail-security` depends on `openmail-smtp` and implements it for `ApprovalVerifier`
+(smtp never depends on security). Deviation from the brief: the trait returns `Result<()>`, and smtp itself builds the proof, so an
+implementer cannot hand-craft one. The binding uses the smtp content hash as `body_sha256`, plus principal, account, normalized
+To+Cc+Bcc, subject and attachment digests. Minting stays in `ApprovalIssuer` + out-of-band `ApprovalGrantor`; no MCP tool reaches it.

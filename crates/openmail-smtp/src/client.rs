@@ -135,7 +135,7 @@ impl<O: OutboxStore, S: SecretSource> SmtpClient<O, S> {
         &self,
         account: &AccountConfig,
         request: SendRequest,
-        proof: &ApprovalProof,
+        proof: ApprovalProof,
     ) -> Result<SendOutcome> {
         let endpoint = account
             .smtp
@@ -144,7 +144,7 @@ impl<O: OutboxStore, S: SecretSource> SmtpClient<O, S> {
         request.validate(&self.options.limits)?;
         validate_sender(&request.from, &account.email, &self.options.aliases)?;
         let hash = request.content_hash();
-        if proof.content_hash() != &hash {
+        if proof.account() != &account.id || proof.content_hash() != &hash {
             return Err(coded(
                 ErrorCode::ApprovalInvalid,
                 "approval does not match the content being sent",
@@ -159,7 +159,7 @@ impl<O: OutboxStore, S: SecretSource> SmtpClient<O, S> {
             content_hash: hash.to_hex(),
             message_id,
             recipients: u32::try_from(request.recipient_count()).unwrap_or(u32::MAX),
-            approval_token: proof.token().to_owned(),
+            approval_token: proof.audit_ref().to_owned(),
         };
         let record = match self.outbox.begin(attempt, PENDING_LEASE).await? {
             Begin::Started(rec) => rec,
