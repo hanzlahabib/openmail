@@ -1,6 +1,6 @@
 [package]
 name = "openmail-oauth"
-description = "OpenMail MCP: oauth"
+description = "OpenMail MCP: OAuth2 (PKCE, device code, refresh) and XOAUTH2 for IMAP/SMTP"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,6 +8,19 @@ license.workspace = true
 
 [dependencies]
 openmail-core.workspace = true
+secrecy.workspace = true
+serde.workspace = true
+base64.workspace = true
+sha2.workspace = true
+tracing.workspace = true
+tokio = { workspace = true, features = ["time"] }
+# rustls only (no OpenSSL); "form" for x-www-form-urlencoded token requests, "json" for responses.
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "form", "json"] }
+getrandom = "0.4"
+
+[dev-dependencies]
+tokio = { workspace = true }
+serde_json.workspace = true
 
 [lints]
 workspace = true
