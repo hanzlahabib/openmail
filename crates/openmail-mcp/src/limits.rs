@@ -7,8 +7,6 @@ pub const MAX_FOLDERS: usize = 500;
 pub const MAX_THREAD_MESSAGES: usize = 200;
 /// Default page size when the caller gives no `limit`.
 pub const DEFAULT_PAGE_SIZE: u32 = 20;
-/// Cap for backend diagnostic text echoed to the client.
-pub const MAX_DETAIL_CHARS: usize = 500;
 
 /// Cut `s` to at most `max` bytes on a char boundary. Returns whether it was cut.
 pub fn truncate_utf8(mut s: String, max: usize) -> (String, bool) {

@@ -7,10 +7,10 @@ use serde::Serialize;
 use crate::untrusted::{UNTRUSTED_NOTICE, UntrustedText};
 
 fn text(s: String) -> UntrustedText {
-    UntrustedText(s)
+    UntrustedText::from(s)
 }
 fn untrusted(u: Untrusted<String>) -> UntrustedText {
-    UntrustedText(u.0)
+    UntrustedText::from(u.0)
 }
 
 /// Notice text attached to every result that includes mailbox text (field `_notice`).
@@ -49,20 +49,31 @@ pub struct ConnectionOut {
     pub imap_ok: bool,
     pub smtp_ok: Option<bool>,
     pub capabilities: Vec<String>,
-    /// Sanitized diagnostic from the backend; never contains credentials.
-    pub detail: Option<String>,
+    /// Fixed diagnostic chosen by this server from the check results; never server text.
+    pub detail: Option<&'static str>,
 }
 
 impl ConnectionOut {
-    pub fn from_report(r: model::ConnectionReport, detail_cap: usize) -> Self {
+    /// The backend's free-text `detail` is deliberately dropped: it can echo server banners or
+    /// error text (security review F3). The booleans carry the outcome; the operator log keeps
+    /// the detail.
+    pub fn from_report(r: model::ConnectionReport) -> Self {
+        let detail = if let Some(d) = &r.detail {
+            tracing::debug!(account = %r.account, detail = %d, "connection report detail withheld from client");
+            Some(if r.imap_ok && r.smtp_ok != Some(false) {
+                "connection check passed with warnings; see the operator log"
+            } else {
+                "connection check failed; see imap_ok and smtp_ok"
+            })
+        } else {
+            None
+        };
         Self {
             account: r.account.to_string(),
             imap_ok: r.imap_ok,
             smtp_ok: r.smtp_ok,
-            capabilities: r.capabilities,
-            detail: r
-                .detail
-                .map(|d| crate::limits::truncate_utf8(d, detail_cap).0),
+            capabilities: crate::sanitize::safe_capabilities(r.capabilities),
+            detail,
         }
     }
 }
