@@ -1,6 +1,6 @@
 [package]
 name = "openmail-imap"
-description = "OpenMail MCP: imap"
+description = "OpenMail MCP: IMAP MailBackend, MIME parsing, bounded session pool"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,6 +8,23 @@ license.workspace = true
 
 [dependencies]
 openmail-core.workspace = true
+ammonia.workspace = true
+async-imap.workspace = true
+base64.workspace = true
+futures.workspace = true
+mail-parser.workspace = true
+rustls-native-certs.workspace = true
+secrecy.workspace = true
+thiserror.workspace = true
+time.workspace = true
+tokio.workspace = true
+tokio-rustls.workspace = true
+tracing.workspace = true
+webpki-roots.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "net", "io-util"] }
 
 [lints]
 workspace = true
