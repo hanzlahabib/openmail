@@ -1,0 +1,18 @@
+[package]
+name = "openmail-cli"
+description = "OpenMail MCP command line (binary: openmail-mcp)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "openmail-mcp"
+path = "src/main.rs"
+
+[dependencies]
+openmail-core.workspace = true
+anyhow.workspace = true
+
+[lints]
+workspace = true

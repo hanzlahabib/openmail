@@ -1,0 +1,13 @@
+[package]
+name = "openmail-briefs"
+description = "OpenMail MCP: briefs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+openmail-core.workspace = true
+
+[lints]
+workspace = true

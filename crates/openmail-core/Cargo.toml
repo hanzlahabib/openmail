@@ -1,0 +1,19 @@
+[package]
+name = "openmail-core"
+description = "OpenMail MCP: domain models, config, errors, backend contracts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+thiserror.workspace = true
+secrecy.workspace = true
+base64.workspace = true
+time.workspace = true
+
+[lints]
+workspace = true
