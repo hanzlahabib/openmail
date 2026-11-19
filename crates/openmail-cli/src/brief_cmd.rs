@@ -294,12 +294,20 @@ async fn brief_now(
             eprintln!("warning: account `{account}` could not be checked ({reason})");
         }
     }
+    let all_failed = brief
+        .accounts
+        .values()
+        .all(|s| !matches!(s, openmail_briefs::model::AccountRunStatus::Ok));
     if let Some((sender, to)) = digest {
         let outcome = EmailDigestAdapter::new(sender)
             .deliver(&shown, &to)
             .await
             .map_err(|e| anyhow!("digest delivery failed: {e}"))?;
         eprintln!("digest to the owner of the digest account: {outcome:?}");
+    }
+    if all_failed {
+        // A brief in which nothing could be read must not look like success to a script.
+        bail!("no account could be checked");
     }
     Ok(())
 }
