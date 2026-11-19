@@ -21,6 +21,12 @@ pub enum ImapError {
 }
 
 impl ImapError {
+    /// I/O errors can wrap raw server bytes (parse failures), so only the kind is kept:
+    /// message content must never end up in an error string.
+    pub fn io(e: &std::io::Error) -> Self {
+        Self::Connection(format!("I/O error: {}", e.kind()))
+    }
+
     pub fn core(code: ErrorCode, message: impl Into<String>) -> Self {
         Self::Core(Error::new(code, message))
     }
@@ -35,7 +41,7 @@ impl From<async_imap::error::Error> for ImapError {
     fn from(e: async_imap::error::Error) -> Self {
         use async_imap::error::Error as E;
         match e {
-            E::Io(e) => Self::Connection(e.to_string()),
+            E::Io(e) => Self::io(&e),
             E::ConnectionLost => Self::Connection("connection lost".into()),
             E::No(m) | E::Bad(m) => Self::Rejected(sanitize(&m)),
             E::Validate(_) => Self::core(

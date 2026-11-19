@@ -134,9 +134,27 @@ impl ImapBackend {
                 "message reference is stale: the folder was reset (UIDVALIDITY changed)",
             ));
         }
-        let q = format!("(UID FLAGS RFC822.SIZE BODY.PEEK[]<0.{MAX_FETCH_BYTES}>)");
+        // Size first: partial BODY[]<0.n> fetches are not parsed by every server, and a
+        // multi-hundred-MB message must not be pulled into memory.
+        let probe: Vec<_> = s
+            .uid_fetch(r.uid.to_string(), "(UID FLAGS RFC822.SIZE)")
+            .await?
+            .try_collect()
+            .await?;
+        let probe = probe.iter().find(|f| f.uid == Some(r.uid)).ok_or_else(|| {
+            ImapError::core(
+                ErrorCode::MessageNotFound,
+                "message no longer exists in this folder",
+            )
+        })?;
+        if probe.size.is_some_and(|n| n > MAX_FETCH_BYTES) {
+            return Err(ImapError::core(
+                ErrorCode::LimitExceeded,
+                format!("message is larger than the {MAX_FETCH_BYTES}-byte fetch limit"),
+            ));
+        }
         let fetches: Vec<_> = s
-            .uid_fetch(r.uid.to_string(), q)
+            .uid_fetch(r.uid.to_string(), "(UID FLAGS RFC822.SIZE BODY.PEEK[])")
             .await?
             .try_collect()
             .await?;
@@ -470,9 +488,7 @@ impl MailBackend for ImapBackend {
             })
             .await?;
         let parsed = mime::parse_message(&raw, max_body_bytes);
-        let mut body = parsed.body;
-        // The server-side slice was capped; tell the caller the content is incomplete.
-        body.truncated |= size.is_some_and(|n| n > MAX_FETCH_BYTES);
+        let body = parsed.body;
         let h = parsed.headers;
         let summary = MessageSummary {
             reference: reference.clone(),

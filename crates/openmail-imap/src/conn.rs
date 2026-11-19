@@ -46,8 +46,7 @@ async fn tcp(ep: &ServerEndpoint) -> ImapResult<TcpStream> {
             ))
         })?;
     // Interactive request/response protocol: avoid Nagle delays.
-    s.set_nodelay(true)
-        .map_err(|e| ImapError::Connection(e.to_string()))?;
+    s.set_nodelay(true).map_err(|e| ImapError::io(&e))?;
     Ok(s)
 }
 
@@ -69,7 +68,7 @@ async fn expect_greeting<T: Io + 'static>(client: &mut Client<T>) -> ImapResult<
     let greeting = client
         .read_response()
         .await
-        .map_err(|e| ImapError::Connection(e.to_string()))?;
+        .map_err(|e| ImapError::io(&e))?;
     let Some(greeting) = greeting else {
         return Err(ImapError::Connection("server closed the connection".into()));
     };

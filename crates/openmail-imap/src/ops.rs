@@ -115,11 +115,7 @@ pub async fn run_raw(s: &mut ImapSession, cmd: &str) -> ImapResult<RawReply> {
     let id = s.run_command(cmd).await?;
     let mut reply = RawReply::default();
     loop {
-        let Some(resp) = s
-            .read_response()
-            .await
-            .map_err(|e| ImapError::Connection(e.to_string()))?
-        else {
+        let Some(resp) = s.read_response().await.map_err(|e| ImapError::io(&e))? else {
             return Err(ImapError::Connection("connection lost".into()));
         };
         match resp.parsed() {
