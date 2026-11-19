@@ -341,16 +341,18 @@ fn database_file_is_private() {
 }
 
 /// The MCP side must have no route to minting. Everything that can mint
-/// (`ApprovalIssuer`, `ApprovalGrantor`, `PendingApprovals`, `HumanConfirmation`)
-/// is allowed only in openmail-security and the CLI.
+/// (`ApprovalIssuer`, `ApprovalGrantor`, `HumanConfirmation`, a `.grant(` call) is
+/// allowed only in openmail-security and the CLI. `PendingApprovals` itself is NOT
+/// forbidden: the server holds it to `request()` a human review, which mints nothing.
+/// Comment lines are ignored so documentation can name these types.
 #[test]
 fn no_other_crate_mints_approvals() {
     let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let forbidden = [
         "ApprovalIssuer",
         "ApprovalGrantor",
-        "PendingApprovals",
         "HumanConfirmation",
+        ".grant(",
     ];
     let mut offenders = Vec::new();
     for entry in std::fs::read_dir(&crates).unwrap() {
@@ -377,8 +379,13 @@ fn scan(dir: &Path, forbidden: &[&str], out: &mut Vec<String>) {
             scan(&p, forbidden, out);
         } else if p.extension().is_some_and(|x| x == "rs") {
             let text = std::fs::read_to_string(&p).unwrap();
+            let code: String = text
+                .lines()
+                .filter(|l| !l.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n");
             for f in forbidden {
-                if text.contains(f) {
+                if code.contains(f) {
                     out.push(format!("{}: {f}", p.display()));
                 }
             }
