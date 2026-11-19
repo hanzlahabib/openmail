@@ -55,10 +55,21 @@ jobs:
           toolchain: stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - run: cargo test --workspace --locked
+        if: runner.os == 'Linux'
+      # macOS and Windows runners have no Docker: the GreenMail-based e2e tests run on Linux only.
+      - run: >-
+          cargo test --workspace --locked --
+          --skip single_account_full_flow
+          --skip two_accounts_are_isolated_and_bad_credentials_fail_safely
+          --skip untrusted_server_certificate_is_refused_by_the_binary
+        if: runner.os != 'Linux'
 
   msrv:
     name: msrv (1.100)
     runs-on: ubuntu-latest
+    env:
+      # rust-toolchain.toml says "stable", which would shadow the 1.100 installed below.
+      RUSTUP_TOOLCHAIN: "1.100"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       # Keep in sync with workspace.package.rust-version.
