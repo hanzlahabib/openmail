@@ -342,3 +342,108 @@ async fn fetch_search_and_pagination() {
         ErrorCode::FolderNotFound
     );
 }
+
+async fn seed_three(env: &Env) -> ImapBackend {
+    let mut admin = env.gm.admin("alice", PW).await;
+    admin.create("Archive").await.unwrap();
+    for i in 1..=3 {
+        admin.append("INBOX", None, None, eml(&format!("Mail {i}"), "x@example.com", &format!("o{i}@example.com"), "", "b")).await.unwrap();
+    }
+    backend(env, vec![writable(alice(env, TlsMode::Implicit))], Limits::default())
+}
+
+async fn move_roundtrip(env: &Env, b: &ImapBackend) {
+    let a = id("alice");
+    let list = b.list_messages(&a, "INBOX", page(10)).await.unwrap();
+    let target = list.items.iter().find(|m| m.subject.0 == "Mail 2").unwrap().reference.clone();
+    let keep = list.items.iter().find(|m| m.subject.0 == "Mail 3").unwrap().reference.clone();
+    let moved = b.move_message(&target, "Archive").await.unwrap();
+    assert_eq!(moved.folder, "Archive");
+    assert_eq!(moved.account, a);
+    assert_eq!(b.get_message(&moved, 1000).await.unwrap().summary.subject.0, "Mail 2");
+    assert_eq!(b.get_message(&target, 1000).await.unwrap_err().code(), ErrorCode::MessageNotFound);
+    // Only the target left INBOX; neighbours (even one flagged \Deleted by someone else) stay.
+    let inbox = b.list_messages(&a, "INBOX", page(10)).await.unwrap();
+    assert_eq!(inbox.items.len(), 2);
+    assert!(inbox.items.iter().any(|m| m.reference == keep));
+    assert_eq!(b.move_message(&keep, "NoSuchFolder").await.unwrap_err().code(), ErrorCode::FolderNotFound);
+    assert!(b.get_message(&keep, 1000).await.is_ok(), "failed move must not lose the message");
+    assert_eq!(b.move_message(&keep, "INBOX").await.unwrap_err().code(), ErrorCode::InvalidInput);
+    let _ = env;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn flags_permissions_and_move() {
+    let Some(env) = env(Mode::Implicit, false).await else { return };
+    let b = seed_three(&env).await;
+    let a = id("alice");
+    let list = b.list_messages(&a, "INBOX", page(10)).await.unwrap();
+    let r = list.items[0].reference.clone();
+
+    b.set_seen(&r, true).await.unwrap();
+    b.set_flagged(&r, true).await.unwrap();
+    let m = b.get_message(&r, 1000).await.unwrap();
+    assert!(m.summary.flags.seen && m.summary.flags.flagged);
+    b.set_seen(&r, false).await.unwrap();
+    b.set_flagged(&r, false).await.unwrap();
+    let m = b.get_message(&r, 1000).await.unwrap();
+    assert!(!m.summary.flags.seen && !m.summary.flags.flagged);
+    let ghost = MessageRef { uid: 9999, ..r.clone() };
+    assert_eq!(b.set_seen(&ghost, true).await.unwrap_err().code(), ErrorCode::MessageNotFound);
+
+    // Server-side MOVE path.
+    move_roundtrip(&env, &b).await;
+
+    // Read-only accounts cannot write, regardless of the caller.
+    let ro = backend(&env, vec![alice(&env, TlsMode::Implicit)], Limits::default());
+    assert_eq!(ro.set_seen(&r, true).await.unwrap_err().code(), ErrorCode::ReadOnlyAccount);
+    assert_eq!(ro.move_message(&r, "Archive").await.unwrap_err().code(), ErrorCode::ReadOnlyAccount);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn move_falls_back_to_copy_and_uid_expunge_without_move_capability() {
+    let Some(env) = env(Mode::Implicit, true).await else { return };
+    let b = seed_three(&env).await;
+    let report = b.test_connection(&id("alice")).await.unwrap();
+    assert!(!report.capabilities.iter().any(|c| c == "MOVE"), "proxy must hide MOVE: {:?}", report.capabilities);
+    assert!(report.capabilities.iter().any(|c| c == "UIDPLUS"));
+    // A bystander flagged \Deleted must survive: plain EXPUNGE would destroy it.
+    let mut admin = env.gm.admin("alice", PW).await;
+    admin.select("INBOX").await.unwrap();
+    let _: Vec<_> = futures::TryStreamExt::try_collect(admin.store("3", "+FLAGS (\\Deleted)").await.unwrap()).await.unwrap();
+    move_roundtrip(&env, &b).await;
+    let mut admin = env.gm.admin("alice", PW).await;
+    let mb = admin.select("INBOX").await.unwrap();
+    assert_eq!(mb.exists, 2, "bystander flagged \\Deleted is still present (UID EXPUNGE only)");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn uidvalidity_change_makes_references_and_cursors_stale() {
+    let Some(env) = env(Mode::Implicit, false).await else { return };
+    let mut admin = env.gm.admin("alice", PW).await;
+    admin.create("Temp").await.unwrap();
+    for i in 1..=3 {
+        admin.append("Temp", None, None, eml(&format!("T{i}"), "x@example.com", &format!("t{i}@example.com"), "", "b")).await.unwrap();
+    }
+    let b = backend(&env, vec![writable(alice(&env, TlsMode::Implicit))], Limits::default());
+    let a = id("alice");
+    let first = b.list_messages(&a, "Temp", page(2)).await.unwrap();
+    let cursor = first.next_cursor.clone().unwrap();
+    let r = first.items[0].reference.clone();
+    assert!(b.get_message(&r, 100).await.is_ok());
+
+    // Recreate the folder: a real server must issue a new UIDVALIDITY.
+    admin.delete("Temp").await.unwrap();
+    admin.create("Temp").await.unwrap();
+    admin.append("Temp", None, None, eml("New", "x@example.com", "new@example.com", "", "b")).await.unwrap();
+    let status = b.folder_status(&a, "Temp").await.unwrap();
+    assert_ne!(status.uid_validity, r.uid_validity, "greenmail should assign a new UIDVALIDITY on recreate");
+    assert_eq!(b.get_message(&r, 100).await.unwrap_err().code(), ErrorCode::StaleReference);
+    assert_eq!(b.set_seen(&r, true).await.unwrap_err().code(), ErrorCode::StaleReference);
+    let paged = b.list_messages(&a, "Temp", PageRequest { cursor: Some(cursor), limit: 2 }).await;
+    assert_eq!(paged.unwrap_err().code(), ErrorCode::StaleReference);
+
+    // A reference forged with the wrong validity is stale even on an untouched folder.
+    let inbox_ref = MessageRef { account: a.clone(), folder: "INBOX".into(), uid_validity: 1, uid: 1 };
+    assert_eq!(b.get_message(&inbox_ref, 100).await.unwrap_err().code(), ErrorCode::StaleReference);
+}
