@@ -36,13 +36,34 @@ pub enum TracingInitError {
 /// Default filter when none is configured: quiet dependencies, info for us.
 pub const DEFAULT_FILTER: &str = "info";
 
-fn build_filter(directives: Option<&str>) -> Result<EnvFilter, TracingInitError> {
-    match directives {
-        Some(d) => EnvFilter::try_new(d).map_err(|e| TracingInitError::Filter(e.to_string())),
-        None => Ok(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(DEFAULT_FILTER))
+/// Cap applied to rmcp unless the operator names it. rmcp logs whole tool results (mail bodies)
+/// at debug, so a blanket `debug` would copy mailbox content into stderr.
+const RMCP_CAP: &str = "rmcp=info";
+
+/// The filter `init_tracing` installs, exposed so callers can assert on it with a scoped
+/// subscriber.
+pub fn build_filter(directives: Option<&str>) -> Result<EnvFilter, TracingInitError> {
+    let (filter, explicit) = match directives {
+        Some(d) => (
+            EnvFilter::try_new(d).map_err(|e| TracingInitError::Filter(e.to_string()))?,
+            d.to_owned(),
         ),
+        None => {
+            let env = std::env::var(EnvFilter::DEFAULT_ENV).unwrap_or_default();
+            (
+                EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| EnvFilter::new(DEFAULT_FILTER)),
+                env,
+            )
+        }
+    };
+    if explicit.contains("rmcp") {
+        return Ok(filter);
     }
+    let cap = RMCP_CAP
+        .parse()
+        .map_err(|_| TracingInitError::Filter(RMCP_CAP.to_owned()))?;
+    Ok(filter.add_directive(cap))
 }
 
 /// Installs the global subscriber writing to stderr. `directives` overrides
@@ -79,6 +100,14 @@ mod tests {
             Err(TracingInitError::Filter(_))
         ));
         assert!(build_filter(Some("openmail_imap=debug,warn")).is_ok());
+    }
+
+    #[test]
+    fn rmcp_is_capped_unless_named() {
+        let capped = build_filter(Some("debug")).map(|f| f.to_string());
+        assert!(capped.is_ok_and(|f| f.contains("rmcp=info")));
+        let open = build_filter(Some("debug,rmcp=debug")).map(|f| f.to_string());
+        assert!(open.is_ok_and(|f| !f.contains("rmcp=info")));
     }
 
     #[test]

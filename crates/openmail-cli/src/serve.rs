@@ -9,10 +9,15 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
+use axum::Router;
+use axum::http::{HeaderValue, header};
+use axum::routing::get;
 use openmail_core::config::Config;
 use openmail_core::ids::AccountId;
 use openmail_imap::ImapBackend;
 use openmail_mcp::{RateLimits, build_server, build_server_with_resolver, serve_stdio};
+use openmail_observe::metrics::Metrics;
+use openmail_observe::observer::Observer;
 use openmail_remote::auth::{
     AuthState, Authenticator, HttpsJwksFetcher, JwtConfig, JwtValidator, ProtectedResourceMetadata,
     StaticBearer,
@@ -23,6 +28,7 @@ use openmail_remote::tls::server_config_from_files;
 use openmail_security::{Action, EnvKeyringSecretSource};
 use url::Url;
 
+use crate::brief_cmd::{self, BriefsPaths};
 use crate::cli::{ServeArgs, Transport};
 
 /// Env vars carrying the http transport's TLS and auth material. Paths only:
@@ -45,6 +51,11 @@ pub const ENV_PUBLIC_URL: &str = "OPENMAIL_HTTP_PUBLIC_URL";
 /// Extra comma-separated `Host` values and browser `Origin`s to accept.
 pub const ENV_ALLOWED_HOSTS: &str = "OPENMAIL_HTTP_ALLOWED_HOSTS";
 pub const ENV_ALLOWED_ORIGINS: &str = "OPENMAIL_HTTP_ALLOWED_ORIGINS";
+/// Set to `1`/`true` to serve Prometheus metrics at `<mcp path>/metrics` (default off). The
+/// route sits behind the same Origin check and bearer/JWT authentication as MCP itself.
+pub const ENV_METRICS: &str = "OPENMAIL_HTTP_METRICS";
+/// Route of the opt-in metrics endpoint, relative to the authenticated MCP mount.
+pub const METRICS_ROUTE: &str = "/metrics";
 
 /// JWT validation settings (all four are required together).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,6 +77,8 @@ pub struct HttpSecurity {
     pub public_url: Option<String>,
     pub allowed_hosts: Vec<String>,
     pub allowed_origins: Vec<String>,
+    /// Expose `METRICS_ROUTE` (authenticated). Off unless the operator asks.
+    pub metrics_enabled: bool,
 }
 
 /// `mail:work=work,shared;mail:home=home` -> scope => account ids.
@@ -148,6 +161,8 @@ impl HttpSecurity {
             public_url: text(ENV_PUBLIC_URL),
             allowed_hosts: split_list(text(ENV_ALLOWED_HOSTS)),
             allowed_origins: split_list(text(ENV_ALLOWED_ORIGINS)),
+            metrics_enabled: text(ENV_METRICS)
+                .is_some_and(|v| matches!(v.trim(), "1" | "true" | "TRUE" | "True")),
         })
     }
 }
@@ -203,7 +218,10 @@ pub async fn shutdown_signal() -> Result<()> {
 }
 
 pub fn run(args: ServeArgs) -> Result<()> {
-    run_with(args, &HttpSecurity::from_env()?, &LiveBackend)
+    let backend = LiveBackend {
+        briefs: BriefsPaths::from_process(args.config.clone()),
+    };
+    run_with(args, &HttpSecurity::from_env()?, &backend)
 }
 
 fn run_with(args: ServeArgs, security: &HttpSecurity, backend: &dyn ServeBackend) -> Result<()> {
@@ -222,8 +240,11 @@ fn run_with(args: ServeArgs, security: &HttpSecurity, backend: &dyn ServeBackend
     }
 }
 
-/// Production wiring: real IMAP backend + OS/env secrets behind the MCP server.
-struct LiveBackend;
+/// Production wiring: real IMAP backend + OS/env secrets behind the MCP server. The config
+/// path locates `briefs.toml`, which sits beside it.
+struct LiveBackend {
+    briefs: BriefsPaths,
+}
 
 impl ServeBackend for LiveBackend {
     fn serve_stdio(&self, config: &Config) -> Result<()> {
@@ -233,11 +254,24 @@ impl ServeBackend for LiveBackend {
             .context("starting async runtime")?;
         let secrets = Arc::new(EnvKeyringSecretSource::new());
         let backend = ImapBackend::new(config.accounts.clone(), config.limits.clone(), secrets)?;
-        let server = build_server(Arc::new(config.clone()), backend);
-        // stdout is the JSON-RPC channel; the library never prints to it.
-        runtime
-            .block_on(serve_stdio(server))
-            .context("serving MCP over stdio")
+        let metrics = Arc::new(Metrics::new());
+        backend
+            .pool()
+            .set_observer(Observer::recording(Arc::clone(&metrics)));
+        let server = build_server(Arc::new(config.clone()), backend)
+            .with_observer(Observer::recording(Arc::clone(&metrics)));
+        runtime.block_on(async {
+            let (server, scheduler) = brief_cmd::attach(server, config, &self.briefs)?;
+            // stdout is the JSON-RPC channel; the library never prints to it.
+            let served = serve_stdio(server).await.context("serving MCP over stdio");
+            if let Some(task) = scheduler {
+                task.abort();
+            }
+            // stdio has no scrape endpoint, so leave one summary line for the operator. Counts
+            // and account-id labels only.
+            tracing::info!(metrics = %metrics.snapshot_json(), "serve stopped");
+            served
+        })
     }
 
     fn serve_http(&self, config: &Config, bind: SocketAddr, security: &HttpSecurity) -> Result<()> {
@@ -245,7 +279,7 @@ impl ServeBackend for LiveBackend {
             .enable_all()
             .build()
             .context("starting async runtime")?;
-        runtime.block_on(serve_https(config, bind, security, async {
+        runtime.block_on(serve_https(config, &self.briefs, bind, security, async {
             if let Err(e) = shutdown_signal().await {
                 tracing::error!(error = %e, "signal handler failed; shutting down");
             }
@@ -361,8 +395,29 @@ fn allowed_hosts(bind: SocketAddr, base: &Url, extra: &[String]) -> Vec<String> 
     hosts
 }
 
+/// Prometheus text for operators. Mounted inside the MCP router so the edge's Origin check and
+/// authentication apply; never an MCP tool, so clients cannot read it through the protocol.
+fn metrics_router(metrics: Arc<Metrics>) -> Router {
+    Router::new().route(
+        METRICS_ROUTE,
+        get(move || {
+            let metrics = Arc::clone(&metrics);
+            async move {
+                (
+                    [(
+                        header::CONTENT_TYPE,
+                        HeaderValue::from_static("text/plain; version=0.0.4; charset=utf-8"),
+                    )],
+                    metrics.render_prometheus(),
+                )
+            }
+        }),
+    )
+}
+
 async fn serve_https(
     config: &Config,
+    briefs: &BriefsPaths,
     bind: SocketAddr,
     security: &HttpSecurity,
     shutdown: impl Future<Output = ()> + Send + 'static,
@@ -376,6 +431,10 @@ async fn serve_https(
 
     let secrets = Arc::new(EnvKeyringSecretSource::new());
     let backend = ImapBackend::new(config.accounts.clone(), config.limits.clone(), secrets)?;
+    let metrics = Arc::new(Metrics::new());
+    backend
+        .pool()
+        .set_observer(Observer::recording(Arc::clone(&metrics)));
     // One server (and one shared backend/rate limiter); each MCP session gets a cheap clone
     // whose principal is resolved per request from the authenticated HTTP request.
     let server = build_server_with_resolver(
@@ -383,14 +442,20 @@ async fn serve_https(
         backend,
         Arc::new(HttpPrincipalResolver),
         RateLimits::default(),
-    );
+    )
+    .with_observer(Observer::recording(Arc::clone(&metrics)));
+    let (server, scheduler) = brief_cmd::attach(server, config, briefs)?;
     let mcp_config = StreamableHttpServerConfig::default().with_allowed_hosts(allowed_hosts(
         bind,
         &base,
         &security.allowed_hosts,
     ));
     let cancel = mcp_config.cancellation_token.clone();
-    let mcp = mcp_router(move || Ok(server.clone()), mcp_config);
+    let mut mcp = mcp_router(move || Ok(server.clone()), mcp_config);
+    if security.metrics_enabled {
+        mcp = mcp.merge(metrics_router(Arc::clone(&metrics)));
+        tracing::info!("metrics endpoint enabled (authenticated)");
+    }
 
     let mut http = HttpConfig::new(bind);
     http.auth = Some(auth);
@@ -398,13 +463,17 @@ async fn serve_https(
     http.allowed_origins = security.allowed_origins.clone();
 
     tracing::info!(%bind, "serving MCP over https");
-    serve_tls(http, mcp, Readiness::default(), tls, async move {
+    let served = serve_tls(http, mcp, Readiness::default(), tls, async move {
         shutdown.await;
         // Ends open SSE streams so the graceful drain can finish.
         cancel.cancel();
     })
     .await
-    .context("serving MCP over https")
+    .context("serving MCP over https");
+    if let Some(task) = scheduler {
+        task.abort();
+    }
+    served
 }
 
 #[cfg(test)]
@@ -625,8 +694,12 @@ imap = { host = "127.0.0.1", port = 1, tls = "implicit" }
         };
         let config = Config::from_toml(HTTP_CONFIG)?;
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let briefs = BriefsPaths {
+            config: dir.path().join("config.toml"),
+            state_dir: Some(dir.path().join("state")),
+        };
         let server = tokio::spawn(async move {
-            serve_https(&config, bind, &security, async {
+            serve_https(&config, &briefs, bind, &security, async {
                 let _ = stopped.await;
             })
             .await
@@ -666,6 +739,90 @@ imap = { host = "127.0.0.1", port = 1, tls = "implicit" }
 
         let _ = stop.send(());
         tokio::time::timeout(std::time::Duration::from_secs(15), server).await???;
+        Ok(())
+    }
+
+    /// `/mcp/metrics` is off by default and, once enabled, needs the same bearer as MCP.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn metrics_endpoint_is_opt_in_and_authenticated() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir()?;
+        let cert = rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_owned()])?;
+        let cert_pem = cert.cert.pem();
+        let (cert_path, key_path, token_path) = (
+            dir.path().join("cert.pem"),
+            dir.path().join("key.pem"),
+            dir.path().join("token"),
+        );
+        std::fs::write(&cert_path, &cert_pem)?;
+        std::fs::write(&key_path, cert.signing_key.serialize_pem())?;
+        std::fs::write(&token_path, "t48-metrics-token\n")?;
+        std::fs::set_permissions(&token_path, std::fs::Permissions::from_mode(0o600))?;
+        let client = reqwest::Client::builder()
+            .add_root_certificate(reqwest::Certificate::from_pem(cert_pem.as_bytes())?)
+            .build()?;
+
+        let mut statuses = Vec::new();
+        for enabled in [false, true] {
+            let port = std::net::TcpListener::bind("127.0.0.1:0")?
+                .local_addr()?
+                .port();
+            let bind: SocketAddr = format!("127.0.0.1:{port}").parse()?;
+            let security = HttpSecurity {
+                tls_cert: Some(cert_path.clone()),
+                tls_key: Some(key_path.clone()),
+                auth_token_file: Some(token_path.clone()),
+                metrics_enabled: enabled,
+                ..HttpSecurity::default()
+            };
+            let config = Config::from_toml(HTTP_CONFIG)?;
+            let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+            let briefs = BriefsPaths {
+                config: dir.path().join("config.toml"),
+                state_dir: Some(dir.path().join("state")),
+            };
+            let server = tokio::spawn(async move {
+                serve_https(&config, &briefs, bind, &security, async {
+                    let _ = stopped.await;
+                })
+                .await
+            });
+            let url = format!("https://127.0.0.1:{port}/mcp{METRICS_ROUTE}");
+            let mut up = false;
+            for _ in 0..100 {
+                if client
+                    .get(format!("https://127.0.0.1:{port}/healthz"))
+                    .send()
+                    .await
+                    .is_ok()
+                {
+                    up = true;
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            assert!(up, "server did not come up");
+            let anon = client.get(&url).send().await?.status().as_u16();
+            let authed = client
+                .get(&url)
+                .bearer_auth("t48-metrics-token")
+                .send()
+                .await?;
+            let status = authed.status().as_u16();
+            let body = authed.text().await?;
+            statuses.push((anon, status, body));
+            let _ = stop.send(());
+            tokio::time::timeout(std::time::Duration::from_secs(15), server).await???;
+        }
+        let (anon_off, authed_off, _) = &statuses[0];
+        assert_eq!(*anon_off, 401);
+        assert_ne!(*authed_off, 200, "metrics must be off by default");
+        let (anon_on, authed_on, body) = &statuses[1];
+        assert_eq!(*anon_on, 401, "metrics must need the bearer");
+        assert_eq!(*authed_on, 200);
+        assert!(body.contains("openmail_auth_failures_total"), "{body}");
         Ok(())
     }
 

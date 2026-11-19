@@ -1,7 +1,5 @@
 //! `accounts list` and `accounts test`. Rendering is pure; the connectivity test
 //! is generic over `MailBackend` so it runs against fakes in tests.
-// TODO(T12): remove once main.rs dispatches into this module.
-#![allow(dead_code)]
 
 use std::fmt::Write as _;
 use std::sync::Arc;
@@ -218,8 +216,8 @@ where
     Ok(results.into_iter().flatten().collect())
 }
 
-/// `accounts list|test` entry point. `test` needs the IMAP backend, which is not yet a
-/// dependency of this crate, so it fails loudly instead of pretending.
+/// `accounts list|test` entry point. `test` opens a real IMAP (and SMTP, when configured)
+/// session per account and exits non-zero if any account failed.
 pub fn run(args: AccountsArgs) -> anyhow::Result<()> {
     let text = std::fs::read_to_string(&args.config)
         .with_context(|| format!("reading {}", args.config.display()))?;
@@ -233,10 +231,34 @@ pub fn run(args: AccountsArgs) -> anyhow::Result<()> {
             }
             Ok(())
         }
-        AccountsAction::Test { .. } => {
-            anyhow::bail!(
-                "`accounts test` needs the IMAP backend (openmail-imap), which is not wired into the CLI yet"
-            )
+        AccountsAction::Test { account } => {
+            let only = account
+                .as_deref()
+                .map(AccountId::new)
+                .transpose()
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .context("starting async runtime")?;
+            let secrets = Arc::new(openmail_security::EnvKeyringSecretSource::new());
+            let backend = Arc::new(openmail_imap::ImapBackend::new(
+                cfg.accounts.clone(),
+                cfg.limits.clone(),
+                secrets,
+            )?);
+            let results = runtime
+                .block_on(test_accounts(backend, &cfg, only.as_ref()))
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            #[allow(clippy::print_stdout)]
+            {
+                print!("{}", render_tests(&results));
+            }
+            if results.iter().all(AccountTest::passed) {
+                Ok(())
+            } else {
+                anyhow::bail!("one or more accounts failed the connection test")
+            }
         }
     }
 }

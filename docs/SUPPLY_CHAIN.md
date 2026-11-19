@@ -32,9 +32,33 @@ added deliberately:
 | Zlib | foldhash 0.2.0 | hashbrown <- hashlink <- rusqlite <- openmail-briefs |
 | CDLA-Permissive-2.0 | webpki-root-certs 1.0.12 | rustls-platform-verifier <- reqwest |
 
+## Keyring backends (Linux behaviour and prerequisites)
+
+`keyring` 4's `v1` API hard-wires the zbus Secret Service store, which pulled the
+unmaintained `zvariant`, `zbus_names` and `zvariant_derive` crates
+(RUSTSEC-2026-0370/0371/0372). `openmail-security` therefore depends on `keyring-core` 1
+and per-platform store crates directly (`crates/openmail-security/src/secret.rs`);
+`keyring` itself is no longer a dependency of any crate.
+
+| Platform | Store | Notes |
+|---|---|---|
+| Linux | `dbus-secret-service-keyring-store` (libdbus, `vendored` build, `crypto-rust`) tried first, then `linux-keyutils-keyring-store` | Secret Service needs a running session bus plus GNOME Keyring/KWallet; entries persist. Without one (headless/CI), the kernel keyutils keyring is used: it needs no daemon, but entries live in the kernel keyring and are **not persisted across reboots**. A build host needs a C compiler (libdbus is built from source). |
+| macOS | `apple-native-keyring-store` (`keychain`) | cfg-gated, compiles only on macOS. **Not built or tested here.** |
+| Windows | `windows-native-keyring-store` | cfg-gated, compiles only on Windows. **Not built or tested here.** |
+
+A store that is reachable but lacks the entry is authoritative (`NoEntry`); the fallback is only
+used when the first store is unavailable. `kind = "env"` credential refs never consult the keyring
+(test `env_refs_never_touch_the_keyring`). Residual: `cargo tree -i zvariant` now matches nothing.
+
 ## Accepted advisories
 
-None. No advisory is ignored.
+| Advisory | Crate | Why accepted | Review by |
+|---|---|---|---|
+| RUSTSEC-2026-0543 / -0555 | chrono 0.4, chrono-tz 0.10 (unmaintained) | Used by the brief scheduler (cron + IANA timezones via croner). Unmaintained notices only, no vulnerability; no drop-in replacement for croner's chrono dependency. | 2027-02-20 |
+| RUSTSEC-2026-0441 | pin-utils 0.1.1 (unmaintained, repo archived 2026-10-01) | Only reachable via async-imap 0.12.0, the latest release; no safe upgrade exists. Tiny macro crate, no vulnerability or soundness advisory. | 2027-02-20 |
+
+Not ignored, owned elsewhere (`openmail-briefs`, handled by the orchestrator): RUSTSEC-2026-0543
+(chrono) and RUSTSEC-2026-0555 (chrono-tz). These still fail `cargo deny check advisories`.
 
 ## Recorded run — 2026-11-19, cargo-deny 0.20.2, RustSec db commit date 2026-11-19
 
@@ -90,6 +114,25 @@ Exit code 0. `advisories ok`: no RustSec vulnerability, unmaintained, unsound or
 crate in the resolved graph. Warnings are duplicate major versions (base64 0.22/0.23,
 sha2/digest 0.10/0.11 via `jsonwebtoken` vs `openmail-oauth`/`openmail-remote`, syn 2/3,
 winnow) and two unused license allowances (BSD-2-Clause, MPL-2.0 — kept as policy).
+
+## Recorded run — 2026-11-20 (T43, cargo-deny 0.20.2, working-tree lockfile)
+
+```text
+$ cargo deny check
+error[unmaintained]: chrono is unmaintained          (RUSTSEC-2026-0543)  -> openmail-briefs, async-imap, rmcp, schemars
+error[unmaintained]: chrono-tz is unmaintained       (RUSTSEC-2026-0555)  -> openmail-briefs
+advisories FAILED, bans ok, licenses ok, sources ok
+```
+
+Cleared by T43: RUSTSEC-2026-0370/0371/0372 (zvariant, zbus_names, zvariant_derive; zbus stack
+removed) and RUSTSEC-2026-0441 (pin-utils; justified ignore above). Remaining failures are the two
+chrono advisories, left to the orchestrator because `openmail-briefs` owns them. Bans/licenses/sources
+are ok; duplicate-version and wildcard warnings are unchanged in kind (the zbus removal did not add
+new ones). `cargo audit` is not installed; cargo-deny reads the same RustSec database.
+`cargo test -p openmail-security` (39 + integration) and `clippy -D warnings` pass.
+Not verifiable here: macOS Keychain and Windows Credential Manager builds.
+Note: the workspace `Cargo.toml` still declares `keyring = "4"`, which cargo now flags as an unused
+workspace dependency (warning); removing it needs a workspace manifest change (not owned by T43).
 
 ## SBOM
 
