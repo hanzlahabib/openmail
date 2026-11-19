@@ -8,6 +8,13 @@ license.workspace = true
 
 [dependencies]
 openmail-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# bundled: ship our own SQLite so the store behaves identically on every platform.
+rusqlite = { version = "0.43", features = ["bundled"] }
+
+[dev-dependencies]
+tempfile = "3"
 
 [lints]
 workspace = true
