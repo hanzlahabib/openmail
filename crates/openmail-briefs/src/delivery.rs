@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
+use std::future::Future;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use openmail_core::error::{Error, ErrorCode, Result};
@@ -151,7 +152,7 @@ pub struct Digest {
 /// Transport for digest emails. Implementations return `ErrorCode::DeliveryUncertain`
 /// when the message may have left the building (e.g. timeout after DATA).
 pub trait DigestSender {
-    fn send(&self, digest: &Digest) -> Result<()>;
+    fn send(&self, digest: &Digest) -> impl Future<Output = Result<()>> + Send;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -254,7 +255,11 @@ impl<S: DigestSender> EmailDigestAdapter<S> {
         &self.audit
     }
 
-    pub fn deliver(&self, brief: &DeliverableBrief, recipient: &str) -> Result<DeliveryOutcome> {
+    pub async fn deliver(
+        &self,
+        brief: &DeliverableBrief,
+        recipient: &str,
+    ) -> Result<DeliveryOutcome> {
         if recipient.is_empty() || recipient.contains(['\r', '\n']) {
             return Err(Error::new(
                 ErrorCode::InvalidInput,
@@ -271,7 +276,7 @@ impl<S: DigestSender> EmailDigestAdapter<S> {
             subject: single_line(&brief.title),
             body_markdown: render_markdown(brief),
         };
-        match self.sender.send(&digest) {
+        match self.sender.send(&digest).await {
             Ok(()) => {
                 self.audit
                     .mark(&brief.id, Channel::EmailDigest, DeliveryState::Delivered);
@@ -300,7 +305,6 @@ impl<S: DigestSender> EmailDigestAdapter<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
 
     fn sample() -> DeliverableBrief {
         let item = |text: &str, p, r: Option<&str>| BriefItem {
@@ -376,35 +380,35 @@ mod tests {
     }
 
     struct FakeSender {
-        sent: RefCell<Vec<Digest>>,
+        sent: Mutex<Vec<Digest>>,
         result: fn() -> Result<()>,
     }
     impl DigestSender for FakeSender {
-        fn send(&self, d: &Digest) -> Result<()> {
-            self.sent.borrow_mut().push(d.clone());
+        async fn send(&self, d: &Digest) -> Result<()> {
+            self.sent.lock().unwrap().push(d.clone());
             (self.result)()
         }
     }
     fn fake(result: fn() -> Result<()>) -> FakeSender {
         FakeSender {
-            sent: RefCell::new(vec![]),
+            sent: Mutex::new(vec![]),
             result,
         }
     }
 
-    #[test]
-    fn email_digest_is_sent_once_per_brief() {
+    #[tokio::test]
+    async fn email_digest_is_sent_once_per_brief() {
         let a = EmailDigestAdapter::new(fake(|| Ok(())));
         let b = sample();
         assert_eq!(
-            a.deliver(&b, "me@example.test").unwrap(),
+            a.deliver(&b, "me@example.test").await.unwrap(),
             DeliveryOutcome::Sent
         );
         assert_eq!(
-            a.deliver(&b, "me@example.test").unwrap(),
+            a.deliver(&b, "me@example.test").await.unwrap(),
             DeliveryOutcome::AlreadyDelivered
         );
-        let sent = a.sender.sent.borrow();
+        let sent = a.sender.sent.lock().unwrap();
         assert_eq!(sent.len(), 1);
         assert_eq!(sent[0].body_markdown, render_markdown(&b));
         assert_eq!(sent[0].subject, "Morning brief");
@@ -414,40 +418,41 @@ mod tests {
         );
     }
 
-    #[test]
-    fn failed_send_may_retry_but_uncertain_never_does() {
+    #[tokio::test]
+    async fn failed_send_may_retry_but_uncertain_never_does() {
         let a = EmailDigestAdapter::new(fake(|| {
             Err(Error::new(ErrorCode::ConnectionFailed, "down"))
         }));
         let b = sample();
-        assert!(a.deliver(&b, "me@example.test").is_err());
+        assert!(a.deliver(&b, "me@example.test").await.is_err());
         assert_eq!(
             a.audit().state("brief-1", Channel::EmailDigest),
             Some(DeliveryState::Failed)
         );
-        assert!(a.deliver(&b, "me@example.test").is_err());
-        assert_eq!(a.sender.sent.borrow().len(), 2);
+        assert!(a.deliver(&b, "me@example.test").await.is_err());
+        assert_eq!(a.sender.sent.lock().unwrap().len(), 2);
 
         let u = EmailDigestAdapter::new(fake(|| {
             Err(Error::new(ErrorCode::DeliveryUncertain, "timeout"))
         }));
-        assert!(u.deliver(&b, "me@example.test").is_err());
+        assert!(u.deliver(&b, "me@example.test").await.is_err());
         assert_eq!(
             u.audit().state("brief-1", Channel::EmailDigest),
             Some(DeliveryState::Uncertain)
         );
         assert_eq!(
-            u.deliver(&b, "me@example.test").unwrap(),
+            u.deliver(&b, "me@example.test").await.unwrap(),
             DeliveryOutcome::AlreadyDelivered
         );
-        assert_eq!(u.sender.sent.borrow().len(), 1);
+        assert_eq!(u.sender.sent.lock().unwrap().len(), 1);
     }
 
-    #[test]
-    fn rejects_header_injection_in_recipient() {
+    #[tokio::test]
+    async fn rejects_header_injection_in_recipient() {
         let a = EmailDigestAdapter::new(fake(|| Ok(())));
         let e = a
             .deliver(&sample(), "x@example.test\r\nBcc: y@example.test")
+            .await
             .unwrap_err();
         assert!(matches!(
             e,
@@ -456,7 +461,7 @@ mod tests {
                 ..
             }
         ));
-        assert!(a.sender.sent.borrow().is_empty());
+        assert!(a.sender.sent.lock().unwrap().is_empty());
         assert_eq!(a.audit().state("brief-1", Channel::EmailDigest), None);
     }
 

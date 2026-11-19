@@ -3,15 +3,21 @@
 //! UIDVALIDITY the old cursor is simply never looked up again, so stale UIDs
 //! cannot hide new mail.
 use std::path::Path;
+use std::sync::{Mutex, MutexGuard};
+use std::time::Duration;
+
+use chrono::{DateTime, SecondsFormat, Utc};
 
 use openmail_core::ids::AccountId;
 use openmail_core::{Error, ErrorCode, Result};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use crate::model::{AccountRunStatus, Brief};
+use crate::scheduler::{SchedulerError, SchedulerStore};
 
 /// Ordered, append-only. Index + 1 is the schema version.
-const MIGRATIONS: &[&str] = &["CREATE TABLE cursors (
+const MIGRATIONS: &[&str] = &[
+    "CREATE TABLE cursors (
         account TEXT NOT NULL,
         folder TEXT NOT NULL,
         uid_validity INTEGER NOT NULL,
@@ -31,7 +37,34 @@ const MIGRATIONS: &[&str] = &["CREATE TABLE cursors (
         status TEXT NOT NULL,
         reason TEXT
     );
-    CREATE INDEX runs_account ON runs (account, id);"];
+    CREATE INDEX runs_account ON runs (account, id);",
+    // v2: scheduler state shared by every process using this database, and the digest audit.
+    // The partial unique index makes "one digest per brief and account" atomic across processes.
+    "CREATE TABLE scheduler_jobs (
+        job_id TEXT PRIMARY KEY,
+        created_at TEXT NOT NULL,
+        last_run TEXT
+    );
+    CREATE TABLE scheduler_leases (
+        job_id TEXT PRIMARY KEY,
+        owner TEXT NOT NULL,
+        expires_at TEXT NOT NULL
+    );
+    CREATE TABLE digest_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        brief_id TEXT NOT NULL,
+        account TEXT NOT NULL,
+        recipient TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        state TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX digest_log_once ON digest_log (brief_id, account) WHERE state <> 'failed';
+    CREATE INDEX digest_log_recent ON digest_log (account, created_at);",
+];
+
+/// How long a writer waits for another process holding the database before failing; several
+/// processes (CLI, `serve`) share one file.
+const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// A finished attempt to process one account.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,6 +85,60 @@ fn db_err(e: impl std::fmt::Display) -> Error {
     Error::new(ErrorCode::Internal, format!("brief store: {e}"))
 }
 
+/// Opens-time setup shared by every connection to the database: WAL, busy timeout, migrations.
+fn migrate(conn: &mut Connection) -> Result<()> {
+    conn.pragma_update(None, "journal_mode", "WAL")
+        .map_err(db_err)?;
+    conn.busy_timeout(BUSY_TIMEOUT).map_err(db_err)?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS schema_migrations (
+            version INTEGER PRIMARY KEY,
+            applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );",
+    )
+    .map_err(db_err)?;
+    let current: i64 = conn
+        .query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(db_err)?;
+    let applied = usize::try_from(current).map_err(db_err)?;
+    if applied > MIGRATIONS.len() {
+        return Err(Error::new(
+            ErrorCode::Unsupported,
+            "brief database was created by a newer OpenMail version",
+        ));
+    }
+    for (idx, sql) in MIGRATIONS.iter().enumerate().skip(applied) {
+        // IMMEDIATE takes the write lock up front; the version is re-read under it because
+        // another process may have applied this step since the check above.
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(db_err)?;
+        let version = i64::try_from(idx + 1).map_err(db_err)?;
+        let done: i64 = tx
+            .query_row(
+                "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(db_err)?;
+        if done >= version {
+            continue;
+        }
+        tx.execute_batch(sql).map_err(db_err)?;
+        tx.execute(
+            "INSERT INTO schema_migrations (version) VALUES (?1)",
+            [version],
+        )
+        .map_err(db_err)?;
+        tx.commit().map_err(db_err)?;
+    }
+    Ok(())
+}
+
 impl BriefStore {
     /// Opens (creating if needed) the database at `path` and applies migrations.
     pub fn open(path: &Path) -> Result<Self> {
@@ -60,39 +147,7 @@ impl BriefStore {
     }
 
     fn init(mut conn: Connection) -> Result<Self> {
-        conn.pragma_update(None, "journal_mode", "WAL")
-            .map_err(db_err)?;
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS schema_migrations (
-                version INTEGER PRIMARY KEY,
-                applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );",
-        )
-        .map_err(db_err)?;
-        let current: i64 = conn
-            .query_row(
-                "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
-                [],
-                |r| r.get(0),
-            )
-            .map_err(db_err)?;
-        let applied = usize::try_from(current).map_err(db_err)?;
-        if applied > MIGRATIONS.len() {
-            return Err(Error::new(
-                ErrorCode::Unsupported,
-                "brief database was created by a newer OpenMail version",
-            ));
-        }
-        for (idx, sql) in MIGRATIONS.iter().enumerate().skip(applied) {
-            let tx = conn.transaction().map_err(db_err)?;
-            tx.execute_batch(sql).map_err(db_err)?;
-            tx.execute(
-                "INSERT INTO schema_migrations (version) VALUES (?1)",
-                [i64::try_from(idx + 1).map_err(db_err)?],
-            )
-            .map_err(db_err)?;
-            tx.commit().map_err(db_err)?;
-        }
+        migrate(&mut conn)?;
         Ok(Self { conn })
     }
 
@@ -241,6 +296,237 @@ impl BriefStore {
     }
 }
 
+/// Result of asking to send a digest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DigestClaim {
+    /// This caller owns the send; report the outcome with [`BriefStore::finish_digest`].
+    Claimed(i64),
+    /// A digest for this brief and account is already pending, sent or uncertain.
+    AlreadySent,
+    /// The account already received its quota of digests in the window.
+    RateLimited,
+}
+
+impl BriefStore {
+    /// Atomically reserves the right to email `brief_id` to `account`'s owner. At most
+    /// `max_in_window` digests per account are allowed since `window_start` (RFC 3339 UTC);
+    /// failed attempts do not count. The audit row is written before any network I/O.
+    pub fn claim_digest(
+        &mut self,
+        brief_id: &str,
+        account: &AccountId,
+        recipient: &str,
+        now: &str,
+        window_start: &str,
+        max_in_window: u32,
+    ) -> Result<DigestClaim> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(db_err)?;
+        let exists: bool = tx
+            .query_row(
+                "SELECT EXISTS (SELECT 1 FROM digest_log WHERE brief_id = ?1 AND account = ?2 AND state <> 'failed')",
+                params![brief_id, account.as_str()],
+                |r| r.get(0),
+            )
+            .map_err(db_err)?;
+        if exists {
+            return Ok(DigestClaim::AlreadySent);
+        }
+        let recent: u32 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM digest_log WHERE account = ?1 AND created_at >= ?2 AND state <> 'failed'",
+                params![account.as_str(), window_start],
+                |r| r.get(0),
+            )
+            .map_err(db_err)?;
+        if recent >= max_in_window {
+            return Ok(DigestClaim::RateLimited);
+        }
+        tx.execute(
+            "INSERT INTO digest_log (brief_id, account, recipient, created_at, state) VALUES (?1, ?2, ?3, ?4, 'pending')",
+            params![brief_id, account.as_str(), recipient, now],
+        )
+        .map_err(db_err)?;
+        let id = tx.last_insert_rowid();
+        tx.commit().map_err(db_err)?;
+        Ok(DigestClaim::Claimed(id))
+    }
+
+    /// `state` is one of `sent`, `failed` (safe to retry) or `uncertain` (never retried).
+    pub fn finish_digest(&self, id: i64, state: &str) -> Result<()> {
+        self.conn
+            .execute(
+                "UPDATE digest_log SET state = ?2 WHERE id = ?1",
+                params![id, state],
+            )
+            .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// `(recipient, state, created_at)` of digests for `account`, newest first.
+    pub fn digest_history(
+        &self,
+        account: &AccountId,
+        limit: u32,
+    ) -> Result<Vec<(String, String, String)>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT recipient, state, created_at FROM digest_log WHERE account = ?1 ORDER BY id DESC LIMIT ?2",
+            )
+            .map_err(db_err)?;
+        let rows = stmt
+            .query_map(params![account.as_str(), limit], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .map_err(db_err)?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(db_err)
+    }
+}
+
+fn sched_err(e: impl std::fmt::Display) -> SchedulerError {
+    SchedulerError::Store(format!("{e}"))
+}
+
+fn ts(t: DateTime<Utc>) -> String {
+    t.to_rfc3339_opts(SecondsFormat::Micros, true)
+}
+
+fn parse_ts(raw: &str) -> std::result::Result<DateTime<Utc>, SchedulerError> {
+    DateTime::parse_from_rfc3339(raw)
+        .map(|t| t.with_timezone(&Utc))
+        .map_err(sched_err)
+}
+
+/// Scheduler state in the shared SQLite file, so two processes (for example two `serve`
+/// instances) take one lease per job and see each other's completed runs. Every call is a
+/// short synchronous statement; the connection lock is never held across an await.
+#[derive(Debug)]
+pub struct SqliteSchedulerStore {
+    conn: Mutex<Connection>,
+}
+
+impl SqliteSchedulerStore {
+    pub fn open(path: &Path) -> Result<Self> {
+        let mut conn = Connection::open(path).map_err(db_err)?;
+        migrate(&mut conn)?;
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
+    }
+
+    fn lock(&self) -> std::result::Result<MutexGuard<'_, Connection>, SchedulerError> {
+        self.conn
+            .lock()
+            .map_err(|_| SchedulerError::Store("scheduler store lock poisoned".into()))
+    }
+
+    /// When this job was first registered. Persisted so a restart does not reset the
+    /// baseline and silently drop fire times that passed while the process was down.
+    pub fn job_created_at(
+        &self,
+        job_id: &str,
+        now: DateTime<Utc>,
+    ) -> std::result::Result<DateTime<Utc>, SchedulerError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT OR IGNORE INTO scheduler_jobs (job_id, created_at) VALUES (?1, ?2)",
+            params![job_id, ts(now)],
+        )
+        .map_err(sched_err)?;
+        let raw: String = conn
+            .query_row(
+                "SELECT created_at FROM scheduler_jobs WHERE job_id = ?1",
+                [job_id],
+                |r| r.get(0),
+            )
+            .map_err(sched_err)?;
+        parse_ts(&raw)
+    }
+}
+
+impl SchedulerStore for SqliteSchedulerStore {
+    async fn last_run(
+        &self,
+        job_id: &str,
+    ) -> std::result::Result<Option<DateTime<Utc>>, SchedulerError> {
+        let conn = self.lock()?;
+        let raw: Option<Option<String>> = conn
+            .query_row(
+                "SELECT last_run FROM scheduler_jobs WHERE job_id = ?1",
+                [job_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(sched_err)?;
+        raw.flatten().as_deref().map(parse_ts).transpose()
+    }
+
+    async fn record_run(
+        &self,
+        job_id: &str,
+        scheduled_for: DateTime<Utc>,
+    ) -> std::result::Result<(), SchedulerError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT INTO scheduler_jobs (job_id, created_at, last_run) VALUES (?1, ?2, ?2)
+             ON CONFLICT (job_id) DO UPDATE SET last_run = excluded.last_run",
+            params![job_id, ts(scheduled_for)],
+        )
+        .map_err(sched_err)?;
+        Ok(())
+    }
+
+    async fn try_acquire(
+        &self,
+        job_id: &str,
+        owner: &str,
+        now: DateTime<Utc>,
+        ttl: Duration,
+    ) -> std::result::Result<bool, SchedulerError> {
+        let ttl = chrono::Duration::from_std(ttl).map_err(sched_err)?;
+        let mut conn = self.lock()?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sched_err)?;
+        let held: Option<(String, String)> = tx
+            .query_row(
+                "SELECT owner, expires_at FROM scheduler_leases WHERE job_id = ?1",
+                [job_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+            .map_err(sched_err)?;
+        if let Some((holder, expires)) = held
+            && holder != owner
+            && parse_ts(&expires)? > now
+        {
+            return Ok(false);
+        }
+        tx.execute(
+            "INSERT INTO scheduler_leases (job_id, owner, expires_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT (job_id) DO UPDATE SET owner = excluded.owner, expires_at = excluded.expires_at",
+            params![job_id, owner, ts(now + ttl)],
+        )
+        .map_err(sched_err)?;
+        tx.commit().map_err(sched_err)?;
+        Ok(true)
+    }
+
+    async fn release(&self, job_id: &str, owner: &str) -> std::result::Result<(), SchedulerError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "DELETE FROM scheduler_leases WHERE job_id = ?1 AND owner = ?2",
+            params![job_id, owner],
+        )
+        .map_err(sched_err)?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -298,6 +584,8 @@ mod tests {
                 due: Some("2026-11-21T17:00:00Z".into()),
             }],
             follow_ups: vec![],
+            ai_summary: None,
+            notes: vec![],
         }
     }
 
