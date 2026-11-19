@@ -55,6 +55,12 @@ pub enum Command {
 pub struct ApprovalsArgs {
     #[arg(skip)]
     pub config: PathBuf,
+    /// Directory holding approvals.db, shared with the server (default:
+    /// $XDG_STATE_HOME/openmail-mcp or ~/.local/state/openmail-mcp).
+    #[arg(long, value_name = "DIR", env = "OPENMAIL_STATE_DIR")]
+    pub state_dir: Option<PathBuf>,
+    #[command(subcommand)]
+    pub action: crate::approvals::ApprovalsAction,
 }
 
 #[derive(Debug, Args)]
