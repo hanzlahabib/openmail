@@ -23,6 +23,7 @@ use openmail_remote::tls::server_config_from_files;
 use openmail_security::{Action, EnvKeyringSecretSource};
 use url::Url;
 
+use crate::brief_cmd::{self, BriefsPaths};
 use crate::cli::{ServeArgs, Transport};
 
 /// Env vars carrying the http transport's TLS and auth material. Paths only:
@@ -203,7 +204,10 @@ pub async fn shutdown_signal() -> Result<()> {
 }
 
 pub fn run(args: ServeArgs) -> Result<()> {
-    run_with(args, &HttpSecurity::from_env()?, &LiveBackend)
+    let backend = LiveBackend {
+        briefs: BriefsPaths::from_process(args.config.clone()),
+    };
+    run_with(args, &HttpSecurity::from_env()?, &backend)
 }
 
 fn run_with(args: ServeArgs, security: &HttpSecurity, backend: &dyn ServeBackend) -> Result<()> {
@@ -222,8 +226,11 @@ fn run_with(args: ServeArgs, security: &HttpSecurity, backend: &dyn ServeBackend
     }
 }
 
-/// Production wiring: real IMAP backend + OS/env secrets behind the MCP server.
-struct LiveBackend;
+/// Production wiring: real IMAP backend + OS/env secrets behind the MCP server. The config
+/// path locates `briefs.toml`, which sits beside it.
+struct LiveBackend {
+    briefs: BriefsPaths,
+}
 
 impl ServeBackend for LiveBackend {
     fn serve_stdio(&self, config: &Config) -> Result<()> {
@@ -234,10 +241,15 @@ impl ServeBackend for LiveBackend {
         let secrets = Arc::new(EnvKeyringSecretSource::new());
         let backend = ImapBackend::new(config.accounts.clone(), config.limits.clone(), secrets)?;
         let server = build_server(Arc::new(config.clone()), backend);
-        // stdout is the JSON-RPC channel; the library never prints to it.
-        runtime
-            .block_on(serve_stdio(server))
-            .context("serving MCP over stdio")
+        runtime.block_on(async {
+            let (server, scheduler) = brief_cmd::attach(server, config, &self.briefs)?;
+            // stdout is the JSON-RPC channel; the library never prints to it.
+            let served = serve_stdio(server).await.context("serving MCP over stdio");
+            if let Some(task) = scheduler {
+                task.abort();
+            }
+            served
+        })
     }
 
     fn serve_http(&self, config: &Config, bind: SocketAddr, security: &HttpSecurity) -> Result<()> {
@@ -245,7 +257,7 @@ impl ServeBackend for LiveBackend {
             .enable_all()
             .build()
             .context("starting async runtime")?;
-        runtime.block_on(serve_https(config, bind, security, async {
+        runtime.block_on(serve_https(config, &self.briefs, bind, security, async {
             if let Err(e) = shutdown_signal().await {
                 tracing::error!(error = %e, "signal handler failed; shutting down");
             }
@@ -363,6 +375,7 @@ fn allowed_hosts(bind: SocketAddr, base: &Url, extra: &[String]) -> Vec<String> 
 
 async fn serve_https(
     config: &Config,
+    briefs: &BriefsPaths,
     bind: SocketAddr,
     security: &HttpSecurity,
     shutdown: impl Future<Output = ()> + Send + 'static,
@@ -384,6 +397,7 @@ async fn serve_https(
         Arc::new(HttpPrincipalResolver),
         RateLimits::default(),
     );
+    let (server, scheduler) = brief_cmd::attach(server, config, briefs)?;
     let mcp_config = StreamableHttpServerConfig::default().with_allowed_hosts(allowed_hosts(
         bind,
         &base,
@@ -398,13 +412,17 @@ async fn serve_https(
     http.allowed_origins = security.allowed_origins.clone();
 
     tracing::info!(%bind, "serving MCP over https");
-    serve_tls(http, mcp, Readiness::default(), tls, async move {
+    let served = serve_tls(http, mcp, Readiness::default(), tls, async move {
         shutdown.await;
         // Ends open SSE streams so the graceful drain can finish.
         cancel.cancel();
     })
     .await
-    .context("serving MCP over https")
+    .context("serving MCP over https");
+    if let Some(task) = scheduler {
+        task.abort();
+    }
+    served
 }
 
 #[cfg(test)]
@@ -625,8 +643,12 @@ imap = { host = "127.0.0.1", port = 1, tls = "implicit" }
         };
         let config = Config::from_toml(HTTP_CONFIG)?;
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let briefs = BriefsPaths {
+            config: dir.path().join("config.toml"),
+            state_dir: Some(dir.path().join("state")),
+        };
         let server = tokio::spawn(async move {
-            serve_https(&config, bind, &security, async {
+            serve_https(&config, &briefs, bind, &security, async {
                 let _ = stopped.await;
             })
             .await
