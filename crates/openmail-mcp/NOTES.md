@@ -22,3 +22,15 @@
 - `mail_list_accounts` input schema is `{type:object, properties:{}}` without additionalProperties:false (rmcp's empty-schema helper).
 - A body deserialization failure (e.g. bad `fields` value) comes back as rmcp's text-only isError result, not the structured error envelope.
 - No deny.toml exists, so `cargo deny` was not run; dependency licenses unaudited here (rmcp Apache-2.0, schemars MIT).
+
+## Wave 4 (T34): write tools
+- `server.rs` split into named routers (`tools_read/organize/draft/send.rs`, `tools_brief.rs` = empty documented hook) combined with `+`. Every tool resolves its principal (`principal(&ctx)`) and goes through `authorized*`; `tests/authz.rs::args_for` enumerates all 22 tools.
+- `PrincipalResolver` + `build_server_with_resolver` (HTTP): resolver gets the rmcp request `Extensions`; for Streamable HTTP rmcp stores `http::request::Parts` there. `None` => ACCESS_DENIED on every tool. stdio keeps the fixed read-only principal. Server bound is `FullBackend` (blanket impl over MailBackend+MailOrganizer+MailDrafts+AttachmentSource+SentFolder).
+- Sending: `OpenMailServer::with_outgoing(Arc<dyn Outgoing>)`; without it send tools answer UNSUPPORTED after authorization. `SmtpOutgoing<S,V,R>` (concrete over `SqliteOutbox`, because `OutboxStore` async fns are not `Send`) and `impl ApprovalRequester for PendingApprovals<C>` (T36) are the production pieces.
+- No message-delete tool; `mail_delete_draft` refuses refs outside the Drafts folder.
+
+## Not done / gaps (T34)
+- A draft's Bcc is not sent: `Message` has no Bcc field, so `mail_send_approved` sends To/Cc only.
+- Drafts are sent as text (or sanitized HTML when no text part exists); non-inline attachments are re-fetched and sent.
+- Production `PendingApprovals` requester is untested here (tests use an in-memory requester double with the real verifier/issuer); `ImapBackend` does not yet implement the new traits, so `openmail-cli` must wire `FullBackend` + `SmtpOutgoing`.
+- HTTP principal resolution is tested with a stub resolver over a duplex pipe, not a real HTTP request.

@@ -38,20 +38,6 @@ pub trait Outgoing: Send + Sync + std::fmt::Debug + 'static {
     ) -> BoxFuture<'a, Result<SendOutcome>>;
 }
 
-/// Adapts `&dyn ApprovalConsumer` to the `impl ApprovalConsumer` that `ApprovalProof::obtain` takes.
-pub(crate) struct DynConsumer<'a>(pub &'a dyn ApprovalConsumer);
-
-impl ApprovalConsumer for DynConsumer<'_> {
-    fn consume(
-        &self,
-        principal: &str,
-        descriptor: &SendRequestDescriptor,
-        token: Option<&str>,
-    ) -> Result<()> {
-        self.0.consume(principal, descriptor, token)
-    }
-}
-
 /// Production [`Outgoing`]: the real SMTP client, the security crate's approval verifier and a
 /// pending-approval requester. Concrete over `SqliteOutbox` because `OutboxStore`'s async fns do
 /// not promise `Send` futures, which the object-safe `send` below needs.
