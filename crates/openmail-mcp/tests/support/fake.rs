@@ -1,4 +1,4 @@
-//! In-memory `SendBackend` + config used only by tests.
+//! In-memory `MailBackend` + config used only by tests.
 #![allow(clippy::unwrap_used, clippy::expect_used, dead_code)]
 use std::sync::Arc;
 
@@ -6,7 +6,7 @@ use openmail_core::config::Config;
 use openmail_core::ids::{AccountId, MessageRef};
 use openmail_core::model::*;
 use openmail_core::{Error, ErrorCode, Result};
-use openmail_mcp::SendBackend;
+use openmail_core::backend::MailBackend;
 
 pub const UID_VALIDITY: u32 = 7;
 pub const INJECTION: &str =
@@ -99,7 +99,7 @@ fn page(items: &[MessageSummary], p: PageRequest) -> Page<MessageSummary> {
     }
 }
 
-impl SendBackend for FakeBackend {
+impl MailBackend for FakeBackend {
     async fn test_connection(&self, account: &AccountId) -> Result<ConnectionReport> {
         Ok(ConnectionReport {
             account: account.clone(),
