@@ -1,0 +1,8 @@
+target
+.git
+.planning
+.env
+*.pem
+config.local.toml
+docs
+tests
