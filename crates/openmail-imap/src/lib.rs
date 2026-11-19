@@ -4,3 +4,5 @@ pub mod error;
 pub mod mime;
 pub mod search;
 pub mod utf7;
+pub mod conn;
+pub mod tls;
