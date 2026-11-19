@@ -13,16 +13,10 @@ fn untrusted(u: Untrusted<String>) -> UntrustedText {
     UntrustedText(u.0)
 }
 
-/// Marker field present on every result that includes mailbox text.
-#[derive(Debug, Clone, Copy, Serialize, JsonSchema)]
-#[serde(transparent)]
-pub struct Notice(#[schemars(length(min = 1))] pub &'static str);
+/// Notice text attached to every result that includes mailbox text (field `_notice`).
+pub type Notice = &'static str;
 
-impl Notice {
-    pub const fn untrusted() -> Self {
-        Self(UNTRUSTED_NOTICE)
-    }
-}
+pub const NOTICE: Notice = UNTRUSTED_NOTICE;
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct PermissionsOut {
@@ -66,7 +60,9 @@ impl ConnectionOut {
             imap_ok: r.imap_ok,
             smtp_ok: r.smtp_ok,
             capabilities: r.capabilities,
-            detail: r.detail.map(|d| crate::limits::truncate_utf8(d, detail_cap).0),
+            detail: r
+                .detail
+                .map(|d| crate::limits::truncate_utf8(d, detail_cap).0),
         }
     }
 }
@@ -82,7 +78,12 @@ pub struct FolderOut {
 
 impl From<model::Folder> for FolderOut {
     fn from(f: model::Folder) -> Self {
-        Self { name: text(f.name), delimiter: f.delimiter.map(String::from), role: f.role, selectable: f.selectable }
+        Self {
+            name: text(f.name),
+            delimiter: f.delimiter.map(String::from),
+            role: f.role,
+            selectable: f.selectable,
+        }
     }
 }
 
@@ -116,7 +117,10 @@ pub struct AddressOut {
 
 impl From<model::Address> for AddressOut {
     fn from(a: model::Address) -> Self {
-        Self { name: a.name.map(text), email: text(a.email) }
+        Self {
+            name: a.name.map(text),
+            email: text(a.email),
+        }
     }
 }
 
@@ -154,7 +158,13 @@ impl From<model::MessageSummary> for SummaryOut {
             from: m.from.into_iter().map(Into::into).collect(),
             to: m.to.into_iter().map(Into::into).collect(),
             date: m.date,
-            flags: FlagsOut { seen: f.seen, flagged: f.flagged, answered: f.answered, draft: f.draft, deleted: f.deleted },
+            flags: FlagsOut {
+                seen: f.seen,
+                flagged: f.flagged,
+                answered: f.answered,
+                draft: f.draft,
+                deleted: f.deleted,
+            },
             has_attachments: m.has_attachments,
             size: m.size,
         }
@@ -200,7 +210,13 @@ pub struct AttachmentOut {
 
 impl From<model::AttachmentMeta> for AttachmentOut {
     fn from(a: model::AttachmentMeta) -> Self {
-        Self { index: a.index, filename: a.filename.map(text), content_type: text(a.content_type), size: a.size, inline: a.inline }
+        Self {
+            index: a.index,
+            filename: a.filename.map(text),
+            content_type: text(a.content_type),
+            size: a.size,
+            inline: a.inline,
+        }
     }
 }
 

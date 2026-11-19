@@ -10,14 +10,41 @@ use std::future::Future;
 
 use openmail_core::Result;
 use openmail_core::ids::{AccountId, MessageRef};
-use openmail_core::model::{ConnectionReport, Folder, FolderStatus, Message, MessageSummary, Page, PageRequest, SearchQuery};
+use openmail_core::model::{
+    ConnectionReport, Folder, FolderStatus, Message, MessageSummary, Page, PageRequest, SearchQuery,
+};
 
 pub trait SendBackend: Send + Sync + 'static {
-    fn test_connection(&self, account: &AccountId) -> impl Future<Output = Result<ConnectionReport>> + Send;
-    fn list_folders(&self, account: &AccountId) -> impl Future<Output = Result<Vec<Folder>>> + Send;
-    fn folder_status(&self, account: &AccountId, folder: &str) -> impl Future<Output = Result<FolderStatus>> + Send;
-    fn list_messages(&self, account: &AccountId, folder: &str, page: PageRequest) -> impl Future<Output = Result<Page<MessageSummary>>> + Send;
-    fn search(&self, account: &AccountId, query: &SearchQuery, page: PageRequest) -> impl Future<Output = Result<Page<MessageSummary>>> + Send;
-    fn get_message(&self, reference: &MessageRef, max_body_bytes: usize) -> impl Future<Output = Result<Message>> + Send;
-    fn get_thread(&self, reference: &MessageRef) -> impl Future<Output = Result<Vec<MessageSummary>>> + Send;
+    fn test_connection(
+        &self,
+        account: &AccountId,
+    ) -> impl Future<Output = Result<ConnectionReport>> + Send;
+    fn list_folders(&self, account: &AccountId)
+    -> impl Future<Output = Result<Vec<Folder>>> + Send;
+    fn folder_status(
+        &self,
+        account: &AccountId,
+        folder: &str,
+    ) -> impl Future<Output = Result<FolderStatus>> + Send;
+    fn list_messages(
+        &self,
+        account: &AccountId,
+        folder: &str,
+        page: PageRequest,
+    ) -> impl Future<Output = Result<Page<MessageSummary>>> + Send;
+    fn search(
+        &self,
+        account: &AccountId,
+        query: &SearchQuery,
+        page: PageRequest,
+    ) -> impl Future<Output = Result<Page<MessageSummary>>> + Send;
+    fn get_message(
+        &self,
+        reference: &MessageRef,
+        max_body_bytes: usize,
+    ) -> impl Future<Output = Result<Message>> + Send;
+    fn get_thread(
+        &self,
+        reference: &MessageRef,
+    ) -> impl Future<Output = Result<Vec<MessageSummary>>> + Send;
 }

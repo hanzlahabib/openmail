@@ -20,7 +20,12 @@ pub enum ServeError {
 
 /// Serve over arbitrary async byte streams until the peer closes them or `shutdown` resolves.
 /// Split out of [`serve_stdio`] so the exact same lifecycle is testable without a real process.
-pub async fn serve_io<B, R, W>(server: OpenMailServer<B>, reader: R, writer: W, shutdown: impl Future<Output = ()>) -> Result<(), ServeError>
+pub async fn serve_io<B, R, W>(
+    server: OpenMailServer<B>,
+    reader: R,
+    writer: W,
+    shutdown: impl Future<Output = ()>,
+) -> Result<(), ServeError>
 where
     B: SendBackend,
     R: AsyncRead + Send + Unpin + 'static,
