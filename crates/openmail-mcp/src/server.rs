@@ -1,8 +1,8 @@
 //! `OpenMailServer`: the rmcp handler, generic over the backend (no `dyn`).
+use crate::backend_bound::SendBackend;
 use std::future::Future;
 use std::sync::Arc;
 
-use crate::backend_bound::SendBackend;
 use openmail_core::config::{AccountConfig, Config, Limits};
 use openmail_core::ids::{AccountId, MessageRef};
 use openmail_core::model::{Message, PageRequest, SearchQuery};

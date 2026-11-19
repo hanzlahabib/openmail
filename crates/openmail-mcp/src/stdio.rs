@@ -1,8 +1,8 @@
 //! stdio transport: stdout carries only JSON-RPC (rmcp owns it); diagnostics go through
 //! `tracing`, which the host binary must route to stderr.
+use crate::backend_bound::SendBackend;
 use std::future::Future;
 
-use crate::backend_bound::SendBackend;
 use rmcp::ServiceExt;
 use rmcp::service::{QuitReason, ServerInitializeError};
 use rmcp::transport::stdio_pipes;
