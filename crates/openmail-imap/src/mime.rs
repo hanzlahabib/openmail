@@ -82,6 +82,94 @@ fn truncate_utf8(s: &mut String, max: usize) -> bool {
     true
 }
 
+/// html5ever's tree builder scans the open-element stack for every start tag, so hostile
+/// markup nested N deep costs O(N^2) (40 s at 32k `<div>`s in a debug build). `html::` only
+/// keeps 128 levels anyway, so the input is cut where nesting passes this bound; 2x the
+/// kept depth leaves headroom for implied wrapper elements.
+const MAX_HTML_NESTING: usize = 256;
+/// Elements that never nest (void) or that the parser closes implicitly, so they do not
+/// grow the open-element stack and must not count toward the nesting bound.
+const FLAT_ELEMENTS: [&str; 20] = [
+    "br", "hr", "img", "input", "meta", "link", "area", "base", "col", "embed", "source", "track",
+    "wbr", "p", "li", "dt", "dd", "option", "tr", "td",
+];
+
+/// Byte offset at which `html` nests deeper than `max_depth`, if it does. A cheap tag
+/// scan, not a parser: over-counting only truncates sooner, never lets depth through.
+fn nesting_cut(html: &str, max_depth: usize) -> Option<usize> {
+    let bytes = html.as_bytes();
+    let (mut depth, mut i) = (0usize, 0usize);
+    while let Some(off) = html[i..].find('<') {
+        let start = i + off;
+        let closing = bytes.get(start + 1) == Some(&b'/');
+        let name_at = start + 1 + usize::from(closing);
+        if html[start..].starts_with("<!--") {
+            i = html[start..]
+                .find("-->")
+                .map_or(html.len(), |e| start + e + 3);
+            continue;
+        }
+        let name_len = bytes[name_at.min(bytes.len())..]
+            .iter()
+            .take_while(|b| b.is_ascii_alphanumeric())
+            .count();
+        i = start + 1;
+        if name_len == 0 {
+            continue;
+        }
+        let name = html[name_at..name_at + name_len].to_ascii_lowercase();
+        // End of the tag, skipping quoted attribute values that may contain '>'.
+        let mut quote = None;
+        let mut end = html.len();
+        for (k, b) in bytes[name_at + name_len..].iter().enumerate() {
+            match (quote, *b) {
+                (None, b'>') => {
+                    end = name_at + name_len + k;
+                    break;
+                }
+                (None, q @ (b'"' | b'\'')) => quote = Some(q),
+                (Some(q), c) if c == q => quote = None,
+                _ => {}
+            }
+        }
+        let self_closed = end > 0 && bytes.get(end - 1) == Some(&b'/');
+        i = end.min(html.len());
+        if FLAT_ELEMENTS.contains(&name.as_str()) || self_closed {
+            continue;
+        }
+        if closing {
+            depth = depth.saturating_sub(1);
+        } else {
+            depth += 1;
+            if depth > max_depth {
+                return Some(start);
+            }
+        }
+    }
+    None
+}
+
+/// Sanitizes `html` so the *output* fits `max` bytes. Sanitizing can grow the input
+/// (`&` becomes `&amp;`, missing end tags are added), so cutting the raw HTML to the cap
+/// first is not enough; the input is shrunk and re-sanitized until the result fits.
+/// Returns the sanitized markup and whether anything was cut.
+fn sanitize_capped(html: &str, max: usize) -> (String, bool) {
+    let mut input = html;
+    let mut cut = false;
+    loop {
+        let out = html::sanitize(input);
+        if out.len() <= max {
+            return (out, cut);
+        }
+        cut = true;
+        // Scale the input by the observed expansion; always shrink by at least one byte
+        // so the loop terminates (the empty input sanitizes to an empty string).
+        let scaled = input.len().saturating_mul(max) / out.len();
+        let next = scaled.min(input.len() - 1);
+        input = &input[..input.floor_char_boundary(next)];
+    }
+}
+
 /// Parses a full RFC 5322 message. Unparseable input degrades to lossy plain text
 /// instead of failing, so one malformed mail never breaks a listing or read.
 pub fn parse_message(raw: &[u8], max_body_bytes: usize) -> ParsedMessage {
@@ -122,14 +210,27 @@ pub fn parse_message(raw: &[u8], max_body_bytes: usize) -> ParsedMessage {
             html.push_str(&h);
         }
     }
+    let nesting_truncated = match nesting_cut(&html, MAX_HTML_NESTING) {
+        Some(at) => {
+            html.truncate(at);
+            true
+        }
+        None => false,
+    };
     // HTML-only mail: derive text from the pruned DOM, never from the parser's own
     // conversion, which would include content hidden from the reader.
     if text.is_empty() && !html.is_empty() {
         text = html::to_text(&html);
     }
     let mut text = clean_body(&text);
-    let mut truncated = truncate_utf8(&mut text, max_body_bytes);
+    let mut truncated = truncate_utf8(&mut text, max_body_bytes) | nesting_truncated;
     truncated |= truncate_utf8(&mut html, max_body_bytes);
+    let (html_sanitized, html_cut) = if html.is_empty() {
+        (String::new(), false)
+    } else {
+        sanitize_capped(&html, max_body_bytes)
+    };
+    truncated |= html_cut;
 
     let attachments = root
         .attachments()
@@ -159,7 +260,7 @@ pub fn parse_message(raw: &[u8], max_body_bytes: usize) -> ParsedMessage {
         headers,
         body: MessageBody {
             text: (!text.is_empty()).then_some(Untrusted(text)),
-            html_sanitized: (!html.is_empty()).then(|| Untrusted(html::sanitize(&html))),
+            html_sanitized: (!html_sanitized.is_empty()).then_some(Untrusted(html_sanitized)),
             truncated,
         },
         attachments,
@@ -321,6 +422,39 @@ Content-Type: text/plain\r\n\r\nhi\r\n--B\r\n\
 Content-Type: application/pdf\r\nContent-Disposition: attachment; filename=\"inv\u{202E}fdp.exe\u{200B}\"\r\n\r\nxx\r\n--B--\r\n";
         let p = parse_message(raw.as_bytes(), 10_000);
         assert_eq!(p.attachments[0].filename.as_deref(), Some("invfdp.exe"));
+    }
+
+    #[test]
+    fn sanitized_html_respects_the_cap_even_when_escaping_expands_it() {
+        // "&" sanitizes to "&amp;": 40 raw bytes become 200, far above a 50-byte cap.
+        let raw = format!(
+            "From: a@b.c\r\nContent-Type: text/html; charset=utf-8\r\n\r\n{}",
+            "&".repeat(40)
+        );
+        let p = parse_message(raw.as_bytes(), 50);
+        let h = p.body.html_sanitized.expect("some html kept").0;
+        assert!(h.len() <= 50, "{} bytes: {h}", h.len());
+        assert!(p.body.truncated);
+        let zero = parse_message(raw.as_bytes(), 0);
+        assert!(zero.body.html_sanitized.is_none() && zero.body.truncated);
+    }
+
+    #[test]
+    fn deeply_nested_html_is_cut_instead_of_going_quadratic() {
+        let depth = 100_000;
+        let raw = format!(
+            "From: a@b.c\r\nContent-Type: text/html\r\n\r\nshallow{}deep{}",
+            "<div>".repeat(depth),
+            "</div>".repeat(depth)
+        );
+        let t = std::time::Instant::now();
+        let p = parse_message(raw.as_bytes(), 64 * 1024);
+        assert!(t.elapsed().as_secs() < 5, "{:?}", t.elapsed());
+        assert!(p.body.truncated);
+        assert!(p.body.text.expect("text").0.contains("shallow"));
+        // Ordinary markup with unclosed p/li and void tags is not cut.
+        let ok = format!("Content-Type: text/html\r\n\r\n{}", "<p>x<br>".repeat(5000));
+        assert!(!parse_message(ok.as_bytes(), 1 << 20).body.truncated);
     }
 
     #[test]
