@@ -6,3 +6,5 @@ pub mod search;
 pub mod utf7;
 pub mod conn;
 pub mod tls;
+pub mod pool;
+pub mod ops;
