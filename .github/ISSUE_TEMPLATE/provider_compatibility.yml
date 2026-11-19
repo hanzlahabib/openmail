@@ -1,0 +1,24 @@
+name: Provider compatibility
+description: A mail provider or client misbehaves
+labels: [provider]
+body:
+  - type: input
+    id: provider
+    attributes:
+      label: Provider and plan
+    validations:
+      required: true
+  - type: dropdown
+    id: auth
+    attributes:
+      label: Authentication
+      options: [App password, OAuth, Bridge password, Other]
+    validations:
+      required: true
+  - type: textarea
+    id: behaviour
+    attributes:
+      label: Observed behaviour
+      description: Redact addresses and hostnames you do not want public.
+    validations:
+      required: true

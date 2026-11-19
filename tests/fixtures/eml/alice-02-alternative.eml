@@ -1,0 +1,23 @@
+From: sender@example.test
+To: alice@openmail.test
+Subject: Multipart alternative
+Date: Mon, 02 Mar 2026 10:00:00 +0000
+Message-ID: <alt-1@openmail.test>
+MIME-Version: 1.0
+Content-Type: multipart/alternative;
+ boundary="===============6703769365234181511=="
+
+--===============6703769365234181511==
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+Plain part of the alternative.
+
+--===============6703769365234181511==
+Content-Type: text/html; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+MIME-Version: 1.0
+
+<html><body><p>HTML <b>part</b></p></body></html>
+
+--===============6703769365234181511==--

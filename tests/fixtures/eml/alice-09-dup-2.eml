@@ -1,0 +1,10 @@
+From: sender@example.test
+To: alice@openmail.test
+Subject: Duplicate id
+Date: Mon, 02 Mar 2026 10:00:00 +0000
+Message-ID: <dup@openmail.test>
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+MIME-Version: 1.0
+
+second copy with different body

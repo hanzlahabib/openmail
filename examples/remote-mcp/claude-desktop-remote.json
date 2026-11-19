@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "openmail-remote": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "https://mail-mcp.example.com/mcp"]
+    }
+  }
+}
