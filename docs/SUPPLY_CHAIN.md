@@ -54,6 +54,7 @@ used when the first store is unavailable. `kind = "env"` credential refs never c
 
 | Advisory | Crate | Why accepted | Review by |
 |---|---|---|---|
+| RUSTSEC-2026-0543 / -0555 | chrono 0.4, chrono-tz 0.10 (unmaintained) | Used by the brief scheduler (cron + IANA timezones via croner). Unmaintained notices only, no vulnerability; no drop-in replacement for croner's chrono dependency. | 2027-02-20 |
 | RUSTSEC-2026-0441 | pin-utils 0.1.1 (unmaintained, repo archived 2026-10-01) | Only reachable via async-imap 0.12.0, the latest release; no safe upgrade exists. Tiny macro crate, no vulnerability or soundness advisory. | 2027-02-20 |
 
 Not ignored, owned elsewhere (`openmail-briefs`, handled by the orchestrator): RUSTSEC-2026-0543

@@ -1,8 +1,6 @@
 //! `doctor`: diagnoses config, credentials and network reachability without ever
 //! printing a secret value. Every check is data (`Check`) so rendering and the
 //! decision logic are unit-testable with fakes.
-// TODO(T12): remove once main.rs dispatches into this module.
-#![allow(dead_code)]
 
 use std::fmt::Write as _;
 use std::io;
@@ -14,7 +12,6 @@ use std::time::{Duration, Instant};
 use crate::cli::DoctorArgs;
 use openmail_core::backend::SecretSource;
 use openmail_core::config::{Config, CredentialRef, ServerEndpoint};
-use openmail_core::{Error, ErrorCode};
 use tokio::net::{TcpStream, lookup_host};
 use tokio::task::JoinSet;
 
@@ -366,35 +363,14 @@ where
     checks
 }
 
-/// Resolves env credentials only. Keyring lookups need `openmail-security`, which is not
-/// a dependency of this crate yet, so they report `Unsupported` and doctor shows a failure
-/// with that code rather than claiming the keyring is fine.
-#[derive(Debug, Clone, Copy)]
-pub struct EnvSecrets;
-
-impl SecretSource for EnvSecrets {
-    fn resolve(&self, reference: &CredentialRef) -> openmail_core::Result<secrecy::SecretString> {
-        match reference {
-            CredentialRef::Env { var } => std::env::var(var)
-                .ok()
-                .filter(|v| !v.is_empty())
-                .map(secrecy::SecretString::from)
-                .ok_or_else(|| Error::new(ErrorCode::AuthFailed, "variable not set")),
-            CredentialRef::Keyring { .. } => Err(Error::new(
-                ErrorCode::Unsupported,
-                "keyring access not wired into the CLI yet",
-            )),
-        }
-    }
-}
-
 /// `doctor` entry point: prints the report, fails (non-zero exit) when any check failed.
 pub fn run(args: DoctorArgs) -> anyhow::Result<()> {
     let file = read_config_file(&args.config);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    let checks = runtime.block_on(run_checks(&file, &EnvSecrets, Arc::new(NetProber)));
+    let secrets = openmail_security::EnvKeyringSecretSource::new();
+    let checks = runtime.block_on(run_checks(&file, &secrets, Arc::new(NetProber)));
     // CLI output channel, not library logging.
     #[allow(clippy::print_stdout)]
     {
@@ -411,6 +387,7 @@ pub fn run(args: DoctorArgs) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use openmail_core::Result;
+    use openmail_core::{Error, ErrorCode};
     use secrecy::SecretString;
     use std::sync::atomic::{AtomicUsize, Ordering};
 

@@ -4,14 +4,11 @@ A local-first, security-first [Model Context Protocol](https://modelcontextproto
 It lets an AI client read, search and (when you allow it) organize and draft mail over plain IMAP/SMTP,
 with your credentials and your mail staying on your machine.
 
-> **Project status: pre-release (0.1.0, wave 2 in progress).** The tree builds as a workspace, but the
-> IMAP, SMTP, MCP-protocol and security crates are still stubs, so **`openmail-mcp serve` does not serve
-> mail yet**. Every feature below is tagged against the real code:
->
-> - **[available]**: implemented in the tree and covered by tests.
-> - **[in development]**: contract or partial code exists, end-to-end behavior does not. Do not rely on it.
->
-> The ledger of who built what is in [docs/AGENT_EXECUTION.md](docs/AGENT_EXECUTION.md).
+> **Project status: pre-release (0.1.0).** The read/search/organize/draft/send tools, send approvals, the stdio and
+> HTTPS transports, daily briefs and the CLI are implemented and tested against a real IMAP/SMTP server (GreenMail).
+> It has **not** been tested against Gmail, Microsoft 365 or Dovecot, has had no independent security audit, and
+> binaries are unsigned. Read [docs/RELEASE_READINESS.md](docs/RELEASE_READINESS.md) before relying on it.
+> Features are tagged **[available]** (implemented and tested) or **[in development]**.
 
 ## Why
 
@@ -46,17 +43,17 @@ Contracts and crate rules: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 | Property | Status |
 |---|---|
 | Config is TOML with unknown keys rejected; inline secrets are rejected, only references (`env` var or `keyring` entry) are allowed | **[available]** (`openmail-core`) |
-| Accounts default to `read_only = true`; `organize`, `drafts`, `send` and `delete` are separate per-account permissions | **[available]** as config; **[in development]** as enforced tool authorization |
+| Accounts default to `read_only = true`; `organize`, `drafts`, `send` and `delete` are separate per-account permissions, enforced on every tool call | **[available]** |
 | Stable message references that detect a changed mailbox (UIDVALIDITY mismatch becomes `StaleReference`) | **[available]** (`openmail-core`) |
 | Errors never carry secrets or message bodies in `Display` output | **[available]** |
 | Diagnostics scrub secrets before export | **[available]** (`openmail-observe`) |
-| Send approval flow, redaction of mailbox text for the model, rate limits | **[in development]** (`openmail-security` is a stub) |
-| HTTP edge: Origin check (DNS rebinding), bearer auth, body and time limits, per-IP rate limit, health probes; refuses non-loopback bind without auth | **[available]** as a library (`openmail-remote`); **[in development]** as a running server (not linked into the CLI) |
+| Human-granted single-use send approvals, sanitized mailbox text, per-account rate limits | **[available]** |
+| HTTP edge: Origin check (DNS rebinding), bearer/JWT auth, body and time limits, per-IP rate limit, health probes | **[available]** |
 | `serve --transport http` refuses to start without TLS cert/key and an auth token file; there is no override flag | **[available]** |
-| JWT validation against a rotating JWKS and RFC 9728 protected-resource metadata; no token passthrough | **[available]** as a library (`openmail-remote`) |
+| JWT validation against a rotating JWKS and RFC 9728 protected-resource metadata; no token passthrough | **[available]** |
 | Container runs as uid 10001, read-only root fs, no Docker socket | **[available]** (`Dockerfile`, `compose.yaml`) |
 
-Threat model document (`docs/THREAT_MODEL.md`) and `SECURITY.md` are **[in development]**. The dependency-license audit is not done yet ([docs/DECISIONS.md](docs/DECISIONS.md) D5).
+See [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md), [docs/SECURITY_REVIEW.md](docs/SECURITY_REVIEW.md) and [SECURITY.md](SECURITY.md).
 
 ## Providers
 
@@ -77,24 +74,23 @@ exist in `openmail-oauth` **[available]** as a library; they are **[in developme
 
 ## Limitations
 
-- No mail is read or sent yet: the IMAP, SMTP and MCP-protocol crates are stubs, so there are no MCP tools to call today.
-- `accounts test`, `brief now`, `brief schedule list`, keyring checks in `doctor`, and both `serve` transports report "not wired yet" instead of pretending to work.
-- No prebuilt binaries, packages or published crate. The repository URL in `Cargo.toml` is a placeholder.
-- IMAP only for reading (no POP3, no provider-specific APIs such as Gmail API or Microsoft Graph).
+- Tested only against GreenMail; Gmail, Microsoft 365 and Dovecot are untested. Provider presets follow vendor docs.
+- OAuth2 for Gmail/Microsoft is a tested library (`openmail-oauth`) but has no end-to-end login flow yet; use app passwords or a pre-obtained token.
+- Not independently audited. Binaries are unsigned; no published crate.
+- IMAP only for reading (no POP3, no Gmail API or Microsoft Graph).
 
 ## Install
 
 Build from source (Rust 1.100+, edition 2024) **[available]**:
 
 ```bash
-git clone <repository-url> openmail-mcp   # public URL not set yet
-cd openmail-mcp
+git clone https://github.com/hanzlahabib/openmail.git
+cd openmail
 cargo build --release -p openmail-cli --bin openmail-mcp
 ./target/release/openmail-mcp --version
 ```
 
-Docker **[available]** as a build recipe (`Dockerfile`, `compose.yaml`, [examples/docker](examples/docker/README.md)); the container
-image runs the HTTP transport, which is **[in development]** until `openmail-remote` is linked into the CLI.
+Docker (`Dockerfile`, `compose.yaml`, [examples/docker](examples/docker/README.md)) runs the HTTPS transport as a non-root user.
 
 ## Quick start
 
@@ -128,11 +124,11 @@ kind = "env"
 var = "OPENMAIL_PERSONAL_PASSWORD"
 ```
 
-`init`, `doctor` (config checks) and `accounts list` are **[available]**. Starting the server is **[in development]**.
+`init`, `doctor`, `accounts list|test` and `serve` are **[available]**.
 
 ## MCP client configuration
 
-Once stdio serving lands, a client entry looks like this **[in development]**:
+A client entry looks like this **[available]**:
 
 ```json
 {
@@ -146,49 +142,47 @@ Once stdio serving lands, a client entry looks like this **[in development]**:
 }
 ```
 
-`init` generates client snippets for you **[available]**; they only become usable when `serve` is.
+`init` generates client snippets for you.
 
 ## CLI
 
 Global flags: `--config <PATH>` (env `OPENMAIL_CONFIG`; default `$XDG_CONFIG_HOME/openmail-mcp/config.toml`), `--log <FILTER>` (env `OPENMAIL_LOG`, default `warn`; logs go to stderr because stdout is the MCP channel).
 
-| Command | Purpose | Status |
-|---|---|---|
-| `init [--force]` | Create a starter config | **[available]** |
-| `doctor` | Check config and credential references | **[available]**; keyring and connectivity probes **[in development]** |
-| `accounts list` | List configured accounts | **[available]** |
-| `accounts test [ACCOUNT]` | Test IMAP/SMTP connectivity | **[in development]** |
-| `serve [--transport stdio\|http] [--bind ADDR]` | Run the MCP server (default bind `127.0.0.1:8765`) | validation and http refusal **[available]**; serving **[in development]** |
-| `brief now` | Generate a brief | **[in development]** |
-| `brief schedule list` | List scheduled briefs | **[in development]** |
+| Command | Purpose |
+|---|---|
+| `init [--force]` | Create a starter config |
+| `doctor` | Check config, credential references and connectivity |
+| `accounts list` / `accounts test [ACCOUNT]` | List accounts / test IMAP and SMTP |
+| `serve [--transport stdio\|http] [--bind ADDR]` | Run the MCP server (http needs TLS + auth; default bind `127.0.0.1:8765`) |
+| `approvals list\|show\|grant\|deny` | Human-side send approvals (never reachable from an MCP tool) |
+| `brief now [--lookback 24h] [--account ID] [--format md\|json] [--email]` | Generate a brief now (`--email` mails it to the digest account's own address only) |
+| `brief schedule list` | List scheduled briefs (schedules run under `serve` when enabled in `briefs.toml`) |
 
 Exit codes: 0 success, 1 runtime failure, 2 usage error.
 
 ## Multi-account
 
-Config supports many `[[account]]` entries (up to 500), each with its own credentials, permissions, folder map,
-connection cap (default 2) and timeout (default 30 s), plus a global connection cap (default 8) **[available]** as validated config.
-Bounded-concurrency aggregation across mailboxes exists in `openmail-briefs` **[available]**; the IMAP pool that
-would use these limits is **[in development]**.
+Many `[[account]]` entries (up to 500), each with its own credentials, permissions, folder map, connection cap
+(default 2) and timeout (default 30 s), plus a global connection cap (default 8). Tested with 3 accounts; 50/100-mailbox
+load is not verified yet ([docs/PERFORMANCE_REPORT.md](docs/PERFORMANCE_REPORT.md)).
 
 ## Remote access (Streamable HTTP)
 
-`openmail-remote` provides the hardened HTTP edge, bearer and OAuth 2.1 resource-server auth **[available]** as a library.
-`openmail-mcp serve --transport http` requires `OPENMAIL_HTTP_TLS_CERT`, `OPENMAIL_HTTP_TLS_KEY` and
-`OPENMAIL_HTTP_AUTH_TOKEN_FILE` (paths only; secrets are never accepted as flags) **[available]**, then exits with
-"not wired yet" **[in development]**.
+`openmail-mcp serve --transport http` serves MCP over in-process TLS with bearer or OAuth 2.1 resource-server auth.
+It requires `OPENMAIL_HTTP_TLS_CERT`, `OPENMAIL_HTTP_TLS_KEY` and `OPENMAIL_HTTP_AUTH_TOKEN_FILE` (or the JWT variables);
+paths only, secrets are never accepted as flags, and there is no override. **[available]**
 
 ## ChatGPT
 
-Connecting ChatGPT requires the remote transport and OAuth. `integrations/chatgpt` exists but contains no
-working connector yet: **[in development]**.
+Setup notes and the local verification record are in `integrations/chatgpt`. Not tested against a live ChatGPT account.
 
 ## Daily briefs
 
-`openmail-briefs` implements, with tests **[available]** as a library: multi-mailbox aggregation, rule-based message
-classification with user rules, follow-up detection (awaiting reply / needs reply), SQLite store, delivery renderers with
-an idempotent audit, an opt-in cron scheduler with leases, missed-run recovery and backoff, and an optional AI
-summarization boundary that is metadata-only by default and refuses unsafe endpoints. CLI wiring is **[in development]**.
+Heuristic summaries of mailbox metadata (never authoritative): aggregation across accounts (a failed account is reported
+as failed, never as quiet), rule-based classification, follow-up detection, processed-mail tracking, an opt-in cron scheduler
+with a SQLite lease, and an optional AI overview that is metadata-only by default. MCP tools: `brief_generate`,
+`brief_get_latest`, `brief_list_action_items`, `brief_get_followups`, `brief_get_status`. Optional settings live in
+`briefs.toml` next to the main config; see `crates/openmail-briefs/NOTES.md`. **[available]**
 
 ## Privacy
 
@@ -201,7 +195,6 @@ summarization boundary that is metadata-only by default and refuses unsafe endpo
 
 | Symptom | Cause / fix |
 |---|---|
-| `error: ... is not wired yet` | The feature is **[in development]**; see the tables above. |
 | `refusing --transport http without TLS` / `without authentication` | Set the three `OPENMAIL_HTTP_*` variables. This check has no override. |
 | Config rejected with an unknown-key error | Unknown keys are rejected on purpose; check spelling against `init` output. |
 | Gmail / iCloud / Yahoo authentication fails | Use an app password, not your account password. |

@@ -7,8 +7,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.100"
 license = "MIT"
-repository = "https://github.com/OWNER/openmail-mcp" # TODO(owner): set when the public repo is approved
-authors = ["OpenMail MCP contributors"]
+repository = "https://github.com/hanzlahabib/openmail"
 
 [workspace.dependencies]
 openmail-core = { path = "crates/openmail-core" }
@@ -32,7 +31,6 @@ base64 = "0.22"
 sha2 = "0.10"
 time = { version = "0.3", features = ["serde", "formatting", "parsing"] }
 getrandom = "0.4"
-keyring = "4"
 rusqlite = { version = "0.43", features = ["bundled"] }
 subtle = "2"
 ammonia = "4"
