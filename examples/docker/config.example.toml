@@ -1,0 +1,4 @@
+# Example only: fake host and account, no real secrets.
+# See docs/ for the full schema; `openmail-mcp init` generates a real starter.
+[[accounts]]
+id = "example"

@@ -1,0 +1,10 @@
+From: sender@example.test
+To: alice@openmail.test
+Subject: Charset shift_jis
+Date: Mon, 02 Mar 2026 10:00:00 +0000
+Message-ID: <cs-shiftjis@openmail.test>
+Content-Type: text/plain; charset="shift_jis"
+Content-Transfer-Encoding: quoted-printable
+MIME-Version: 1.0
+
+=82=B1=82=F1=82=C9=82=BF=82=CD=90=A2=8AE

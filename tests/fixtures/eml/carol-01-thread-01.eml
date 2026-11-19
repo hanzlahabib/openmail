@@ -1,0 +1,13 @@
+From: p1@example.test
+To: carol@openmail.test
+Subject: Re: Long thread
+Date: Tue, 03 Mar 2026 09:10:00 +0000
+Message-ID: <thread-01@openmail.test>
+In-Reply-To: <thread-00@openmail.test>
+References: <thread-00@openmail.test>
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+MIME-Version: 1.0
+
+Thread message 1.
+> quoted earlier text
