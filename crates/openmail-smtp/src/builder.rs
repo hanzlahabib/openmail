@@ -2,7 +2,8 @@
 //! the SMTP envelope only; they never appear in any header.
 use lettre::message::header::ContentType;
 use lettre::message::{Attachment as MimeAttachment, Mailbox, MultiPart, SinglePart};
-use lettre::{Address as LettreAddress, Envelope, Message};
+use lettre::Message;
+use lettre::address::{Address as LettreAddress, Envelope};
 use openmail_core::model::Address;
 use openmail_core::{Error, ErrorCode, Result};
 
@@ -22,7 +23,12 @@ fn invalid(msg: impl Into<String>) -> Error {
 
 fn parse_address(email: &str) -> Result<LettreAddress> {
     // Error text intentionally omits nothing sensitive: addresses are not secrets, but keep it terse.
-    email.parse().map_err(|_| invalid(format!("invalid email address '{email}'")))
+    let bad = || invalid(format!("invalid email address '{email}'"));
+    // Punycode the domain ourselves so IDN recipients work on servers without SMTPUTF8
+    // (lettre only validates the Unicode domain and would otherwise require SMTPUTF8).
+    let (user, domain) = email.rsplit_once('@').ok_or_else(bad)?;
+    let domain = if domain.is_ascii() { domain.to_owned() } else { idna::domain_to_ascii(domain).map_err(|_| bad())? };
+    format!("{user}@{domain}").parse().map_err(|_| bad())
 }
 
 fn mailbox(a: &Address) -> Result<Mailbox> {
@@ -64,8 +70,9 @@ pub fn build_message(request: &SendRequest, message_id: &str) -> Result<BuiltMes
     if let Some(id) = &request.in_reply_to {
         builder = builder.in_reply_to(id.clone());
     }
-    for id in &request.references {
-        builder = builder.references(id.clone());
+    if !request.references.is_empty() {
+        // lettre's `references()` replaces rather than appends: pass the whole chain at once.
+        builder = builder.references(request.references.join(" "));
     }
 
     let recipients = request
@@ -134,7 +141,7 @@ mod tests {
         let t = text(&b);
         assert!(t.contains("Message-ID: <abc@example.com>"));
         assert!(t.contains("In-Reply-To: <orig@example.org>"));
-        assert!(t.contains("References: <root@example.org>"), "{t}");
+        assert!(t.contains("References: <root@example.org> <orig@example.org>"), "{t}");
         assert!(t.contains("multipart/alternative"));
         assert!(t.contains("text/plain") && t.contains("text/html"));
         assert!(!t.contains("secret@example.net"), "bcc must not be in headers");
