@@ -13,6 +13,15 @@ path = "src/main.rs"
 [dependencies]
 openmail-core.workspace = true
 anyhow.workspace = true
+tokio.workspace = true
+secrecy.workspace = true
+
+clap = { version = "4.6", features = ["derive", "env"] }
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "ansi"] }
+
+[dev-dependencies]
+assert_cmd = "2.2"
 
 [lints]
 workspace = true
