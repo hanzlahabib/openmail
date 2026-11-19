@@ -1,9 +1,9 @@
 # ChatGPT connection test checklist
 
-Run top to bottom against a **test mailbox**. Items 1-6 run locally with curl and need no ChatGPT.
+Run top to bottom against a **test mailbox**. Items 1-6 run locally with curl/Inspector and need no ChatGPT (run 2026-11-19, static-token mode: see VERIFICATION.md; items 1-4 and 6 passed, item 5 only in-process tests).
 Mark each result; anything not run stays "not run". Replace `$URL` with your endpoint
 (e.g. `https://127.0.0.1:8765` via a local TLS cert, `-k` only for a self-signed local cert) and
-`$TOKEN` with a fake/test token from your test IdP.
+`$TOKEN` with a test token (static token for 1-4/6; JWT from a test IdP for 5). Real endpoint is `$URL/mcp`; trust a private CA with `--cacert`.
 
 ## A. Local server (no ChatGPT)
 
@@ -33,5 +33,5 @@ Mark each result; anything not run stays "not run". Replace `$URL` with your end
 13. [ ] Remove the connection in ChatGPT, revoke tokens, stop the server, delete the test mailbox data
     if disposable.
 
-Record: date, OpenMail version (`openmail-mcp --version`), ChatGPT plan, which items passed. Until
-section B has been run by a person, the integration remains **unverified**.
+Record: date, OpenMail version (`openmail-mcp --version`), ChatGPT plan, which items passed. Section B (ChatGPT) has NOT been run by anyone; the ChatGPT integration remains **unverified**.
+Note ChatGPT cannot use the static token: section B needs JWT mode with an external authorization server.
