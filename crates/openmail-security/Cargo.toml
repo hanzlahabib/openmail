@@ -11,7 +11,6 @@ openmail-core.workspace = true
 # Dependency direction: security -> smtp (implements smtp's ApprovalConsumer); smtp never depends on security.
 openmail-smtp.workspace = true
 getrandom.workspace = true
-keyring.workspace = true
 rusqlite.workspace = true
 secrecy.workspace = true
 sha2.workspace = true
@@ -24,3 +23,19 @@ tempfile = "3"
 
 [lints]
 workspace = true
+
+# keyring 4's `v1` API hard-wires the zbus Secret Service store (zvariant/zbus_names are
+# RUSTSEC-2026-0370/0371/0372 unmaintained), so we use keyring-core with per-platform
+# stores instead. See docs/SUPPLY_CHAIN.md "Keyring backends".
+[target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))'.dependencies]
+keyring-core = "1.0.1"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+linux-keyutils-keyring-store = "1.0.0"
+dbus-secret-service-keyring-store = { version = "1.0.1", features = ["crypto-rust", "vendored"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+apple-native-keyring-store = { version = "1.0.2", features = ["keychain"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-native-keyring-store = "1.1.0"
