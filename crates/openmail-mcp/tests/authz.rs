@@ -95,6 +95,11 @@ fn args_for(tool: &str, account: &str) -> Value {
         "mail_forward_approved" => {
             json!({ "message_ref": r, "to": [{ "email": "bob@example.com" }] })
         }
+        "brief_generate" => json!({ "accounts": [account] }),
+        "brief_get_latest"
+        | "brief_get_status"
+        | "brief_list_action_items"
+        | "brief_get_followups" => json!({ "account": account }),
         other => panic!("tool {other} has no authorization test case; add it to args_for"),
     }
 }
