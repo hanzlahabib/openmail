@@ -458,6 +458,7 @@ fn issue(s: &AuthServer, client_id: &str, scope: &str) -> Result<Response, Error
     let access = jsonwebtoken::encode(&header, &claims, &s.key.encoding)
         .map_err(|e| Error::Key(format!("signing failed: {e}")))?;
     let refresh = random_token()?;
+    s.store.touch_client(client_id, t)?;
     let refresh_ttl = i64::try_from(s.cfg.refresh_ttl.as_secs()).unwrap_or(0);
     s.store
         .put_refresh(&hash_refresh(&refresh), client_id, scope, t + refresh_ttl)?;

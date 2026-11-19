@@ -584,6 +584,12 @@ async fn serve_https(
     let mut http = HttpConfig::new(bind);
     http.auth = Some(auth);
     http.public_routes = public_routes;
+    // The reverse proxy on this host is the only peer that can reach the loopback listener;
+    // believing its X-Forwarded-For keeps the per-client rate limit per visitor, not one shared bucket.
+    http.trusted_proxies = vec![
+        std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+        std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
+    ];
     http.resource_metadata = Some(metadata);
     http.allowed_origins = security.allowed_origins.clone();
 

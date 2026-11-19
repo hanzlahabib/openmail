@@ -10,6 +10,8 @@ use crate::Error;
 /// Registered clients kept at most; dynamic registration is unauthenticated, so the table
 /// must not grow without bound.
 pub const MAX_CLIENTS: i64 = 200;
+/// A registered client that has never obtained a token may be evicted after this long.
+const UNUSED_CLIENT_TTL_SECS: i64 = 24 * 3600;
 
 #[derive(Debug)]
 pub struct Store {
@@ -41,7 +43,7 @@ impl Store {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS clients (
                 client_id TEXT PRIMARY KEY, name TEXT NOT NULL,
-                redirect_uris TEXT NOT NULL, created_at INTEGER NOT NULL);
+                redirect_uris TEXT NOT NULL, created_at INTEGER NOT NULL, last_used INTEGER);
              CREATE TABLE IF NOT EXISTS refresh_tokens (
                 token_hash TEXT PRIMARY KEY, client_id TEXT NOT NULL,
                 scope TEXT NOT NULL, expires_at INTEGER NOT NULL);",
@@ -63,11 +65,21 @@ impl Store {
 
     pub fn add_client(&self, c: &Client, now: i64) -> Result<(), Error> {
         let conn = self.lock();
-        let n: i64 = conn
-            .query_row("SELECT COUNT(*) FROM clients", [], |r| r.get(0))
+        let count = |c: &Connection| -> Result<i64, Error> {
+            c.query_row("SELECT COUNT(*) FROM clients", [], |r| r.get(0))
+                .map_err(db)
+        };
+        if count(&conn)? >= MAX_CLIENTS {
+            // Registration is unauthenticated, so anyone could fill the table and lock real
+            // clients out. Clients that never completed a login are disposable after a day.
+            conn.execute(
+                "DELETE FROM clients WHERE last_used IS NULL AND created_at < ?1",
+                [now - UNUSED_CLIENT_TTL_SECS],
+            )
             .map_err(db)?;
-        if n >= MAX_CLIENTS {
-            return Err(Error::TooManyClients);
+            if count(&conn)? >= MAX_CLIENTS {
+                return Err(Error::TooManyClients);
+            }
         }
         conn.execute(
             "INSERT INTO clients (client_id, name, redirect_uris, created_at) VALUES (?1, ?2, ?3, ?4)",
@@ -79,6 +91,17 @@ impl Store {
             ],
         )
         .map_err(db)?;
+        Ok(())
+    }
+
+    /// Marks a client as having completed a login, which protects it from eviction.
+    pub fn touch_client(&self, id: &str, now: i64) -> Result<(), Error> {
+        self.lock()
+            .execute(
+                "UPDATE clients SET last_used = ?2 WHERE client_id = ?1",
+                params![id, now],
+            )
+            .map_err(db)?;
         Ok(())
     }
 
@@ -138,5 +161,40 @@ impl Store {
         Ok(row
             .filter(|(_, _, exp)| *exp > now)
             .map(|(client_id, scope, _)| RefreshGrant { client_id, scope }))
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    fn client(i: i64) -> Client {
+        Client {
+            client_id: format!("c{i}"),
+            name: "n".into(),
+            redirect_uris: vec![],
+        }
+    }
+
+    #[test]
+    fn a_full_table_evicts_stale_unused_clients_but_never_ones_that_logged_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("o.db")).unwrap();
+        let day = UNUSED_CLIENT_TTL_SECS;
+        for i in 0..MAX_CLIENTS {
+            s.add_client(&client(i), 1000).unwrap();
+        }
+        s.touch_client("c0", 1500).unwrap();
+        // Table full and nothing is old enough yet: refused.
+        assert!(matches!(
+            s.add_client(&client(9999), 1000 + day - 1),
+            Err(Error::TooManyClients)
+        ));
+        // A day later the unused ones are disposable; the one that logged in survives.
+        s.add_client(&client(10_000), 1001 + day).unwrap();
+        assert!(s.client("c0").unwrap().is_some());
+        assert!(s.client("c1").unwrap().is_none());
+        assert!(s.client("c10000").unwrap().is_some());
     }
 }
