@@ -38,7 +38,10 @@ impl From<async_imap::error::Error> for ImapError {
             E::Io(e) => Self::Connection(e.to_string()),
             E::ConnectionLost => Self::Connection("connection lost".into()),
             E::No(m) | E::Bad(m) => Self::Rejected(sanitize(&m)),
-            E::Validate(_) => Self::core(ErrorCode::InvalidInput, "value contains characters not allowed in IMAP commands"),
+            E::Validate(_) => Self::core(
+                ErrorCode::InvalidInput,
+                "value contains characters not allowed in IMAP commands",
+            ),
             E::Parse(_) => Self::Connection("unparseable server response".into()),
             _ => Self::Connection("unexpected IMAP client error".into()),
         }
@@ -51,8 +54,14 @@ impl From<ImapError> for Error {
             ImapError::Core(e) => e,
             ImapError::Connection(m) => Error::new(ErrorCode::ConnectionFailed, m),
             ImapError::Timeout => Error::new(ErrorCode::Timeout, "IMAP operation timed out"),
-            ImapError::Auth => Error::new(ErrorCode::AuthFailed, "IMAP authentication failed; check the configured credential"),
-            ImapError::Rejected(m) => Error::new(ErrorCode::Internal, format!("IMAP server rejected the command: {m}")),
+            ImapError::Auth => Error::new(
+                ErrorCode::AuthFailed,
+                "IMAP authentication failed; check the configured credential",
+            ),
+            ImapError::Rejected(m) => Error::new(
+                ErrorCode::Internal,
+                format!("IMAP server rejected the command: {m}"),
+            ),
         }
     }
 }

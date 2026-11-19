@@ -26,16 +26,28 @@ impl Authenticator for XOAuth2 {
     type Response = String;
     fn process(&mut self, _challenge: &[u8]) -> String {
         // Second round is the server's JSON error challenge; an empty reply ends it.
-        if std::mem::replace(&mut self.sent, true) { String::new() } else { self.payload.clone() }
+        if std::mem::replace(&mut self.sent, true) {
+            String::new()
+        } else {
+            self.payload.clone()
+        }
     }
 }
 
 async fn tcp(ep: &ServerEndpoint) -> ImapResult<TcpStream> {
     let s = TcpStream::connect((ep.host.as_str(), ep.port))
         .await
-        .map_err(|e| ImapError::Connection(format!("cannot reach {}:{}: {}", ep.host, ep.port, e.kind())))?;
+        .map_err(|e| {
+            ImapError::Connection(format!(
+                "cannot reach {}:{}: {}",
+                ep.host,
+                ep.port,
+                e.kind()
+            ))
+        })?;
     // Interactive request/response protocol: avoid Nagle delays.
-    s.set_nodelay(true).map_err(|e| ImapError::Connection(e.to_string()))?;
+    s.set_nodelay(true)
+        .map_err(|e| ImapError::Connection(e.to_string()))?;
     Ok(s)
 }
 
@@ -44,22 +56,40 @@ async fn handshake<T: Io + 'static>(
     tls: &TlsConnector,
     ep: &ServerEndpoint,
 ) -> ImapResult<BoxedIo> {
-    let name = ServerName::try_from(ep.host.clone()).map_err(|_| ImapError::Connection("invalid server host name".into()))?;
-    let s = tls.connect(name, stream).await.map_err(|e| ImapError::Connection(format!("TLS handshake failed: {e}")))?;
+    let name = ServerName::try_from(ep.host.clone())
+        .map_err(|_| ImapError::Connection("invalid server host name".into()))?;
+    let s = tls
+        .connect(name, stream)
+        .await
+        .map_err(|e| ImapError::Connection(format!("TLS handshake failed: {e}")))?;
     Ok(Box::new(s))
 }
 
 async fn expect_greeting<T: Io + 'static>(client: &mut Client<T>) -> ImapResult<()> {
-    let greeting = client.read_response().await.map_err(|e| ImapError::Connection(e.to_string()))?;
-    let Some(greeting) = greeting else { return Err(ImapError::Connection("server closed the connection".into())) };
+    let greeting = client
+        .read_response()
+        .await
+        .map_err(|e| ImapError::Connection(e.to_string()))?;
+    let Some(greeting) = greeting else {
+        return Err(ImapError::Connection("server closed the connection".into()));
+    };
     match greeting.parsed() {
-        Response::Data { status: Status::Ok | Status::PreAuth, .. } => Ok(()),
-        _ => Err(ImapError::Connection("server refused the connection".into())),
+        Response::Data {
+            status: Status::Ok | Status::PreAuth,
+            ..
+        } => Ok(()),
+        _ => Err(ImapError::Connection(
+            "server refused the connection".into(),
+        )),
     }
 }
 
 /// Connects, secures the channel and authenticates. Auth rejection -> `ImapError::Auth`.
-pub async fn open(cfg: &AccountConfig, secret: &SecretString, tls: &TlsConnector) -> ImapResult<ImapSession> {
+pub async fn open(
+    cfg: &AccountConfig,
+    secret: &SecretString,
+    tls: &TlsConnector,
+) -> ImapResult<ImapSession> {
     let ep = &cfg.imap;
     let client: Client<BoxedIo> = match ep.tls {
         TlsMode::Implicit => {
@@ -70,9 +100,14 @@ pub async fn open(cfg: &AccountConfig, secret: &SecretString, tls: &TlsConnector
         TlsMode::StartTls => {
             let mut plain = Client::new(tcp(ep).await?);
             expect_greeting(&mut plain).await?;
-            plain.run_command_and_check_ok("STARTTLS", None).await.map_err(|_| {
-                ImapError::Connection("server refused STARTTLS; refusing to continue unencrypted".into())
-            })?;
+            plain
+                .run_command_and_check_ok("STARTTLS", None)
+                .await
+                .map_err(|_| {
+                    ImapError::Connection(
+                        "server refused STARTTLS; refusing to continue unencrypted".into(),
+                    )
+                })?;
             // No new greeting follows a successful STARTTLS upgrade.
             Client::new(handshake(plain.into_inner(), tls, ep).await?)
         }
@@ -81,8 +116,19 @@ pub async fn open(cfg: &AccountConfig, secret: &SecretString, tls: &TlsConnector
     let result = match cfg.auth {
         AuthMethod::Password => client.login(user, secret.expose_secret()).await,
         AuthMethod::Oauth2 => {
-            let payload = format!("user={user}\x01auth=Bearer {}\x01\x01", secret.expose_secret());
-            client.authenticate("XOAUTH2", XOAuth2 { payload, sent: false }).await
+            let payload = format!(
+                "user={user}\x01auth=Bearer {}\x01\x01",
+                secret.expose_secret()
+            );
+            client
+                .authenticate(
+                    "XOAUTH2",
+                    XOAuth2 {
+                        payload,
+                        sent: false,
+                    },
+                )
+                .await
         }
     };
     result.map_err(|(e, _)| match e {

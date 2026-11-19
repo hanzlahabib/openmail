@@ -62,7 +62,10 @@ fn decode_chunk(chunk: &str) -> Option<String> {
     if bytes.len() % 2 != 0 {
         return None;
     }
-    let units: Vec<u16> = bytes.chunks_exact(2).map(|b| u16::from_be_bytes([b[0], b[1]])).collect();
+    let units: Vec<u16> = bytes
+        .chunks_exact(2)
+        .map(|b| u16::from_be_bytes([b[0], b[1]]))
+        .collect();
     String::from_utf16(&units).ok()
 }
 
@@ -72,8 +75,14 @@ mod tests {
 
     #[test]
     fn rfc_examples() {
-        assert_eq!(encode("~peter/mail/台北/日本語"), "~peter/mail/&U,BTFw-/&ZeVnLIqe-");
-        assert_eq!(decode("~peter/mail/&U,BTFw-/&ZeVnLIqe-"), "~peter/mail/台北/日本語");
+        assert_eq!(
+            encode("~peter/mail/台北/日本語"),
+            "~peter/mail/&U,BTFw-/&ZeVnLIqe-"
+        );
+        assert_eq!(
+            decode("~peter/mail/&U,BTFw-/&ZeVnLIqe-"),
+            "~peter/mail/台北/日本語"
+        );
     }
 
     #[test]

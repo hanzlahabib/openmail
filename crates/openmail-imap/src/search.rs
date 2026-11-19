@@ -6,7 +6,9 @@ use openmail_core::{Error, ErrorCode, Result};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
-const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Translated {
@@ -28,7 +30,10 @@ pub fn quote(s: &str) -> Result<String> {
     if s.chars().any(char::is_control) {
         return Err(invalid("search values must not contain control characters"));
     }
-    Ok(format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"")))
+    Ok(format!(
+        "\"{}\"",
+        s.replace('\\', "\\\\").replace('"', "\\\"")
+    ))
 }
 
 fn imap_date(s: &str) -> Result<String> {
@@ -87,7 +92,11 @@ pub fn translate(q: &SearchQuery) -> Result<Translated> {
     if keys.is_empty() {
         keys.push("ALL".into());
     }
-    Ok(Translated { criteria: keys.join(" "), needs_utf8, has_attachment: q.has_attachment })
+    Ok(Translated {
+        criteria: keys.join(" "),
+        needs_utf8,
+        has_attachment: q.has_attachment,
+    })
 }
 
 #[cfg(test)]
@@ -121,28 +130,44 @@ mod tests {
 
     #[test]
     fn offset_dates_use_utc_day() {
-        let q = SearchQuery { since: Some("2026-03-05T01:00:00+05:00".into()), ..Default::default() };
+        let q = SearchQuery {
+            since: Some("2026-03-05T01:00:00+05:00".into()),
+            ..Default::default()
+        };
         assert_eq!(translate(&q).unwrap().criteria, "SINCE 4-Mar-2026");
     }
 
     #[test]
     fn injection_attempts_rejected() {
-        let q = SearchQuery { subject: Some("x\r\nA1 DELETE INBOX".into()), ..Default::default() };
+        let q = SearchQuery {
+            subject: Some("x\r\nA1 DELETE INBOX".into()),
+            ..Default::default()
+        };
         assert_eq!(translate(&q).unwrap_err().code(), ErrorCode::InvalidInput);
         assert_eq!(quote("a\\b").unwrap(), r#""a\\b""#);
     }
 
     #[test]
     fn bad_date_rejected() {
-        let q = SearchQuery { since: Some("yesterday".into()), ..Default::default() };
+        let q = SearchQuery {
+            since: Some("yesterday".into()),
+            ..Default::default()
+        };
         assert_eq!(translate(&q).unwrap_err().code(), ErrorCode::InvalidInput);
-        let q = SearchQuery { since: Some("2026-13-40".into()), ..Default::default() };
+        let q = SearchQuery {
+            since: Some("2026-13-40".into()),
+            ..Default::default()
+        };
         assert!(translate(&q).is_err());
     }
 
     #[test]
     fn non_ascii_flags_charset_and_attachment_is_client_side() {
-        let q = SearchQuery { text: Some("café".into()), has_attachment: Some(true), ..Default::default() };
+        let q = SearchQuery {
+            text: Some("café".into()),
+            has_attachment: Some(true),
+            ..Default::default()
+        };
         let t = translate(&q).unwrap();
         assert!(t.needs_utf8);
         assert_eq!(t.has_attachment, Some(true));

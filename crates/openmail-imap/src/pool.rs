@@ -46,7 +46,9 @@ pub struct Pool {
 
 impl std::fmt::Debug for Pool {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Pool").field("accounts", &self.inner.slots.len()).finish_non_exhaustive()
+        f.debug_struct("Pool")
+            .field("accounts", &self.inner.slots.len())
+            .finish_non_exhaustive()
     }
 }
 
@@ -62,7 +64,9 @@ pub struct Lease {
 impl Lease {
     fn session(&mut self) -> &mut ImapSession {
         // Invariant: `session` is Some until `discard`/drop consume the lease.
-        self.session.as_mut().unwrap_or_else(|| unreachable!("lease used after discard"))
+        self.session
+            .as_mut()
+            .unwrap_or_else(|| unreachable!("lease used after discard"))
     }
 
     /// Drops the session (it is in an unknown state) instead of pooling it.
@@ -77,7 +81,13 @@ impl Drop for Lease {
         match (self.session.take(), global) {
             (Some(session), Some(permit)) => {
                 if let Some(slot) = self.inner.slots.get(&self.account) {
-                    slot.idle.lock().unwrap_or_else(PoisonError::into_inner).push(Idle { session, _global: permit });
+                    slot.idle
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .push(Idle {
+                            session,
+                            _global: permit,
+                        });
                 }
             }
             (_, permit) => drop(permit),
@@ -87,42 +97,72 @@ impl Drop for Lease {
 }
 
 impl Pool {
-    pub fn new(accounts: Vec<AccountConfig>, limits: &Limits, secrets: Arc<dyn SecretSource>, tls: TlsConnector) -> Self {
+    pub fn new(
+        accounts: Vec<AccountConfig>,
+        limits: &Limits,
+        secrets: Arc<dyn SecretSource>,
+        tls: TlsConnector,
+    ) -> Self {
         let slots = accounts
             .into_iter()
             .map(|cfg| {
                 let id = cfg.id.clone();
                 let permits = Arc::new(Semaphore::new(usize::from(cfg.max_connections)));
-                (id, Slot { cfg, permits, idle: Mutex::new(Vec::new()) })
+                (
+                    id,
+                    Slot {
+                        cfg,
+                        permits,
+                        idle: Mutex::new(Vec::new()),
+                    },
+                )
             })
             .collect();
         let global_cap = usize::from(limits.max_global_connections.max(1));
         let global = Arc::new(Semaphore::new(global_cap));
-        Self { inner: Arc::new(Inner { slots, global, global_cap, available: Notify::new(), secrets, tls }) }
+        Self {
+            inner: Arc::new(Inner {
+                slots,
+                global,
+                global_cap,
+                available: Notify::new(),
+                secrets,
+                tls,
+            }),
+        }
     }
 
     pub fn account(&self, id: &AccountId) -> Result<&AccountConfig> {
-        self.inner
-            .slots
-            .get(id)
-            .map(|s| &s.cfg)
-            .ok_or_else(|| Error::new(ErrorCode::AccountNotFound, format!("unknown account '{id}'")))
+        self.inner.slots.get(id).map(|s| &s.cfg).ok_or_else(|| {
+            Error::new(
+                ErrorCode::AccountNotFound,
+                format!("unknown account '{id}'"),
+            )
+        })
     }
 
     /// Number of sockets currently held (leased + idle); used by tests and diagnostics.
     pub fn open_sessions(&self) -> usize {
-        self.inner.global_cap.saturating_sub(self.inner.global.available_permits())
+        self.inner
+            .global_cap
+            .saturating_sub(self.inner.global.available_permits())
     }
 
     fn limit_error(what: &str) -> ImapError {
-        ImapError::core(ErrorCode::LimitExceeded, format!("timed out waiting for a free {what} connection slot"))
+        ImapError::core(
+            ErrorCode::LimitExceeded,
+            format!("timed out waiting for a free {what} connection slot"),
+        )
     }
 
     fn evict_one_idle(&self) -> bool {
-        self.inner
-            .slots
-            .values()
-            .any(|s| s.idle.lock().unwrap_or_else(PoisonError::into_inner).pop().is_some())
+        self.inner.slots.values().any(|s| {
+            s.idle
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .pop()
+                .is_some()
+        })
     }
 
     async fn acquire_global(&self, deadline: Instant) -> ImapResult<OwnedSemaphorePermit> {
@@ -135,14 +175,22 @@ impl Pool {
             if self.evict_one_idle() {
                 continue;
             }
-            if timeout(deadline.saturating_duration_since(Instant::now()), wake).await.is_err() {
+            if timeout(deadline.saturating_duration_since(Instant::now()), wake)
+                .await
+                .is_err()
+            {
                 return Err(Self::limit_error("global"));
             }
         }
     }
 
     async fn acquire(&self, id: &AccountId) -> ImapResult<Lease> {
-        let slot = self.inner.slots.get(id).ok_or_else(|| ImapError::core(ErrorCode::AccountNotFound, format!("unknown account '{id}'")))?;
+        let slot = self.inner.slots.get(id).ok_or_else(|| {
+            ImapError::core(
+                ErrorCode::AccountNotFound,
+                format!("unknown account '{id}'"),
+            )
+        })?;
         let wait = slot.cfg.timeout();
         let deadline = Instant::now() + wait;
         let account_permit = timeout(wait, slot.permits.clone().acquire_owned())
@@ -152,10 +200,26 @@ impl Pool {
 
         // Prefer a pooled session, verifying it is still alive.
         loop {
-            let idle = slot.idle.lock().unwrap_or_else(PoisonError::into_inner).pop();
-            let Some(Idle { mut session, _global }) = idle else { break };
+            let idle = slot
+                .idle
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .pop();
+            let Some(Idle {
+                mut session,
+                _global,
+            }) = idle
+            else {
+                break;
+            };
             if timeout(wait, session.noop()).await.is_ok_and(|r| r.is_ok()) {
-                return Ok(Lease { session: Some(session), global: Some(_global), _account: account_permit, inner: self.inner.clone(), account: id.clone() });
+                return Ok(Lease {
+                    session: Some(session),
+                    global: Some(_global),
+                    _account: account_permit,
+                    inner: self.inner.clone(),
+                    account: id.clone(),
+                });
             }
             tracing::debug!(account = %id, "discarding dead pooled IMAP session");
         }
@@ -166,15 +230,28 @@ impl Pool {
         let secret = tokio::task::spawn_blocking(move || secrets.resolve(&cred))
             .await
             .map_err(|_| ImapError::core(ErrorCode::Internal, "secret resolution task failed"))??;
-        let session = timeout(wait, conn::open(&slot.cfg, &secret, &self.inner.tls)).await.map_err(|_| ImapError::Timeout)??;
+        let session = timeout(wait, conn::open(&slot.cfg, &secret, &self.inner.tls))
+            .await
+            .map_err(|_| ImapError::Timeout)??;
         tracing::debug!(account = %id, "opened IMAP session");
-        Ok(Lease { session: Some(session), global: Some(global), _account: account_permit, inner: self.inner.clone(), account: id.clone() })
+        Ok(Lease {
+            session: Some(session),
+            global: Some(global),
+            _account: account_permit,
+            inner: self.inner.clone(),
+            account: id.clone(),
+        })
     }
 
     /// Runs `op` on a pooled session with the account timeout. When `retry` is set and
     /// the session turns out to be dead (server restart, dropped TCP), the operation is
     /// re-run once on a fresh connection; pass `false` for non-idempotent operations.
-    pub async fn run<T>(&self, id: &AccountId, retry: bool, mut op: impl AsyncFnMut(&mut ImapSession) -> ImapResult<T>) -> Result<T> {
+    pub async fn run<T>(
+        &self,
+        id: &AccountId,
+        retry: bool,
+        mut op: impl AsyncFnMut(&mut ImapSession) -> ImapResult<T>,
+    ) -> Result<T> {
         let wait = self.account(id)?.timeout();
         let attempts = if retry { 2 } else { 1 };
         let mut last = ImapError::core(ErrorCode::Internal, "no attempt made");

@@ -24,7 +24,9 @@ pub fn connector(extra_roots: &[CertificateDer<'static>]) -> ImapResult<TlsConne
         roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
     }
     for cert in extra_roots {
-        roots.add(cert.clone()).map_err(|_| ImapError::Connection("invalid extra root certificate".into()))?;
+        roots
+            .add(cert.clone())
+            .map_err(|_| ImapError::Connection("invalid extra root certificate".into()))?;
     }
     let config = ClientConfig::builder_with_provider(Arc::new(ring::default_provider()))
         .with_safe_default_protocol_versions()

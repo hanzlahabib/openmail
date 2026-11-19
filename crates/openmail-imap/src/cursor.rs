@@ -12,7 +12,10 @@ pub struct Cursor {
 
 impl Cursor {
     pub fn encode(&self) -> String {
-        URL_SAFE_NO_PAD.encode(format!("c1\0{}\0{}\0{}", self.folder, self.uid_validity, self.last_uid))
+        URL_SAFE_NO_PAD.encode(format!(
+            "c1\0{}\0{}\0{}",
+            self.folder, self.uid_validity, self.last_uid
+        ))
     }
 
     pub fn decode(s: &str) -> Result<Self> {
@@ -20,7 +23,9 @@ impl Cursor {
         let bytes = URL_SAFE_NO_PAD.decode(s).map_err(|_| bad())?;
         let text = String::from_utf8(bytes).map_err(|_| bad())?;
         let parts: Vec<&str> = text.split('\0').collect();
-        let [version, folder, validity, last] = parts[..] else { return Err(bad()) };
+        let [version, folder, validity, last] = parts[..] else {
+            return Err(bad());
+        };
         if version != "c1" || folder.is_empty() {
             return Err(bad());
         }
@@ -34,10 +39,16 @@ impl Cursor {
     /// Validates against the live folder; a UIDVALIDITY change makes the cursor stale.
     pub fn check(&self, folder: &str, uid_validity: u32) -> Result<()> {
         if self.folder != folder {
-            return Err(Error::new(ErrorCode::InvalidInput, "cursor belongs to a different folder"));
+            return Err(Error::new(
+                ErrorCode::InvalidInput,
+                "cursor belongs to a different folder",
+            ));
         }
         if self.uid_validity != uid_validity {
-            return Err(Error::new(ErrorCode::StaleReference, "mailbox changed since this cursor was issued; restart the listing"));
+            return Err(Error::new(
+                ErrorCode::StaleReference,
+                "mailbox changed since this cursor was issued; restart the listing",
+            ));
         }
         Ok(())
     }
@@ -49,16 +60,29 @@ mod tests {
 
     #[test]
     fn roundtrip_and_checks() {
-        let c = Cursor { folder: "INBOX/é".into(), uid_validity: 9, last_uid: 120 };
+        let c = Cursor {
+            folder: "INBOX/é".into(),
+            uid_validity: 9,
+            last_uid: 120,
+        };
         assert_eq!(Cursor::decode(&c.encode()).unwrap(), c);
         assert!(c.check("INBOX/é", 9).is_ok());
-        assert_eq!(c.check("INBOX/é", 10).unwrap_err().code(), ErrorCode::StaleReference);
-        assert_eq!(c.check("Other", 9).unwrap_err().code(), ErrorCode::InvalidInput);
+        assert_eq!(
+            c.check("INBOX/é", 10).unwrap_err().code(),
+            ErrorCode::StaleReference
+        );
+        assert_eq!(
+            c.check("Other", 9).unwrap_err().code(),
+            ErrorCode::InvalidInput
+        );
     }
 
     #[test]
     fn garbage_rejected() {
-        assert_eq!(Cursor::decode("%%%").unwrap_err().code(), ErrorCode::InvalidInput);
+        assert_eq!(
+            Cursor::decode("%%%").unwrap_err().code(),
+            ErrorCode::InvalidInput
+        );
         let short = URL_SAFE_NO_PAD.encode("c1\0INBOX\01");
         assert!(Cursor::decode(&short).is_err());
     }

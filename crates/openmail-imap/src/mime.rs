@@ -31,7 +31,10 @@ fn addresses(list: Option<mail_parser::AddressList<'_>>) -> Vec<Address> {
     list.into_iter()
         .flat_map(|l| l.mailboxes().collect::<Vec<_>>())
         .filter_map(|m| {
-            m.address().map(|a| Address { name: m.name().filter(|n| !n.is_empty()).map(str::to_owned), email: a.to_owned() })
+            m.address().map(|a| Address {
+                name: m.name().filter(|n| !n.is_empty()).map(str::to_owned),
+                email: a.to_owned(),
+            })
         })
         .collect()
 }
@@ -40,11 +43,17 @@ fn rfc3339_utc(dt: &mail_parser::DateTime) -> Option<String> {
     if !dt.is_valid() {
         return None;
     }
-    OffsetDateTime::from_unix_timestamp(dt.to_timestamp()).ok()?.format(&Rfc3339).ok()
+    OffsetDateTime::from_unix_timestamp(dt.to_timestamp())
+        .ok()?
+        .format(&Rfc3339)
+        .ok()
 }
 
 fn header_info(m: mail_parser::MessageRef<'_>) -> HeaderInfo {
-    let ids = |l: Option<mail_parser::TextList<'_>>| l.map(|l| l.iter().map(str::to_owned).collect()).unwrap_or_default();
+    let ids = |l: Option<mail_parser::TextList<'_>>| {
+        l.map(|l| l.iter().map(str::to_owned).collect())
+            .unwrap_or_default()
+    };
     HeaderInfo {
         message_id: m.message_id().map(str::to_owned),
         subject: m.subject().unwrap_or_default().to_owned(),
@@ -59,7 +68,10 @@ fn header_info(m: mail_parser::MessageRef<'_>) -> HeaderInfo {
 
 /// Parses a header block only (used for list views and threading).
 pub fn parse_headers(raw: &[u8]) -> HeaderInfo {
-    MessageParser::default().parse_headers(raw).map(|m| header_info(m.root())).unwrap_or_default()
+    MessageParser::default()
+        .parse_headers(raw)
+        .map(|m| header_info(m.root()))
+        .unwrap_or_default()
 }
 
 fn truncate_utf8(s: &mut String, max: usize) -> bool {
@@ -78,7 +90,11 @@ pub fn parse_message(raw: &[u8], max_body_bytes: usize) -> ParsedMessage {
         let truncated = truncate_utf8(&mut text, max_body_bytes);
         return ParsedMessage {
             headers: HeaderInfo::default(),
-            body: MessageBody { text: Some(Untrusted(text)), html_sanitized: None, truncated },
+            body: MessageBody {
+                text: Some(Untrusted(text)),
+                html_sanitized: None,
+                truncated,
+            },
             attachments: Vec::new(),
         };
     };
@@ -87,7 +103,10 @@ pub fn parse_message(raw: &[u8], max_body_bytes: usize) -> ParsedMessage {
 
     let mut text = String::new();
     let mut html = String::new();
-    for part in root.text_body().filter(|p| matches!(p.kind(), PartKind::Text)) {
+    for part in root
+        .text_body()
+        .filter(|p| matches!(p.kind(), PartKind::Text))
+    {
         if let Some(t) = part.text() {
             if !text.is_empty() {
                 text.push_str("\n\n");
@@ -101,7 +120,10 @@ pub fn parse_message(raw: &[u8], max_body_bytes: usize) -> ParsedMessage {
     {
         text = t.into_owned();
     }
-    for part in root.html_body().filter(|p| matches!(p.kind(), PartKind::Html)) {
+    for part in root
+        .html_body()
+        .filter(|p| matches!(p.kind(), PartKind::Html))
+    {
         if let Some(h) = part.text() {
             html.push_str(&h);
         }
@@ -117,7 +139,13 @@ pub fn parse_message(raw: &[u8], max_body_bytes: usize) -> ParsedMessage {
             filename: p.attachment_name().map(str::to_owned),
             content_type: p
                 .content_type()
-                .map(|c| format!("{}/{}", c.ctype().to_ascii_lowercase(), c.subtype().unwrap_or("octet-stream").to_ascii_lowercase()))
+                .map(|c| {
+                    format!(
+                        "{}/{}",
+                        c.ctype().to_ascii_lowercase(),
+                        c.subtype().unwrap_or("octet-stream").to_ascii_lowercase()
+                    )
+                })
                 .unwrap_or_else(|| "application/octet-stream".into()),
             size: u32::try_from(p.decoded_len()).unwrap_or(u32::MAX),
             inline: p.is_inline(),
@@ -138,7 +166,10 @@ pub fn parse_message(raw: &[u8], max_body_bytes: usize) -> ParsedMessage {
 /// Decoded bytes of one attachment (index as reported by `parse_message`).
 pub fn attachment_bytes(raw: &[u8], index: u32) -> Option<(AttachmentMeta, Vec<u8>)> {
     let msg = MessageParser::default().parse(raw)?;
-    let meta = parse_message(raw, 0).attachments.into_iter().find(|a| a.index == index)?;
+    let meta = parse_message(raw, 0)
+        .attachments
+        .into_iter()
+        .find(|a| a.index == index)?;
     let part = msg.root().attachments().nth(usize::try_from(index).ok()?)?;
     Some((meta, part.decoded().into_owned()))
 }
@@ -148,10 +179,15 @@ pub fn attachment_bytes(raw: &[u8], index: u32) -> Option<(AttachmentMeta, Vec<u
 /// are inert until a human clicks them.
 pub fn sanitize_html(html: &str) -> String {
     let mut b = ammonia::Builder::default();
-    b.rm_tags(["img", "picture", "source", "video", "audio", "iframe", "object", "embed", "svg", "form", "input", "link"])
-        .clean_content_tags(HashSet::from(["script", "style", "iframe", "object", "embed", "svg"]))
-        .url_schemes(HashSet::from(["http", "https", "mailto"]))
-        .link_rel(Some("noopener noreferrer nofollow"));
+    b.rm_tags([
+        "img", "picture", "source", "video", "audio", "iframe", "object", "embed", "svg", "form",
+        "input", "link",
+    ])
+    .clean_content_tags(HashSet::from([
+        "script", "style", "iframe", "object", "embed", "svg",
+    ]))
+    .url_schemes(HashSet::from(["http", "https", "mailto"]))
+    .link_rel(Some("noopener noreferrer nofollow"));
     b.clean(html).to_string()
 }
 
@@ -161,7 +197,11 @@ mod tests {
 
     macro_rules! fixture {
         ($n:literal) => {
-            include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/mime/", $n))
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../tests/fixtures/mime/",
+                $n
+            ))
         };
     }
 
@@ -174,10 +214,20 @@ mod tests {
         assert_eq!(p.headers.cc[0].email, "dan@example.org");
         assert_eq!(p.headers.date.as_deref(), Some("2021-11-20T22:22:01Z"));
         assert_eq!(p.headers.message_id.as_deref(), Some("alt-1@example.com"));
-        assert_eq!(p.headers.references, vec!["root@example.com", "mid@example.com"]);
+        assert_eq!(
+            p.headers.references,
+            vec!["root@example.com", "mid@example.com"]
+        );
         assert_eq!(p.headers.in_reply_to, vec!["root@example.com"]);
         assert_eq!(p.body.text.as_ref().unwrap().0.trim(), "Plain body line");
-        assert!(p.body.html_sanitized.as_ref().unwrap().0.contains("<b>body</b>"));
+        assert!(
+            p.body
+                .html_sanitized
+                .as_ref()
+                .unwrap()
+                .0
+                .contains("<b>body</b>")
+        );
         assert!(!p.body.truncated);
         assert!(p.attachments.is_empty());
     }
@@ -186,11 +236,17 @@ mod tests {
     fn mixed_with_attachment() {
         let raw = fixture!("mixed_attachment.eml");
         let p = parse_message(raw, 10_000);
-        assert_eq!(p.body.text.as_ref().unwrap().0.trim(), "See the attachment.");
+        assert_eq!(
+            p.body.text.as_ref().unwrap().0.trim(),
+            "See the attachment."
+        );
         assert!(p.body.html_sanitized.is_none());
         assert_eq!(p.attachments.len(), 1);
         let a = &p.attachments[0];
-        assert_eq!((a.filename.as_deref(), a.content_type.as_str(), a.inline), (Some("report.pdf"), "application/pdf", false));
+        assert_eq!(
+            (a.filename.as_deref(), a.content_type.as_str(), a.inline),
+            (Some("report.pdf"), "application/pdf", false)
+        );
         assert_eq!(a.size, 26);
         let (_, bytes) = attachment_bytes(raw, 0).unwrap();
         assert!(bytes.starts_with(b"%PDF-1.4"));
@@ -226,7 +282,16 @@ mod tests {
     fn hostile_html_is_neutralized() {
         let p = parse_message(fixture!("hostile_html.eml"), 10_000);
         let h = p.body.html_sanitized.unwrap().0;
-        for bad in ["script", "onclick", "<img", "tracker.example", "javascript:", "alert(", "<style", "url("] {
+        for bad in [
+            "script",
+            "onclick",
+            "<img",
+            "tracker.example",
+            "javascript:",
+            "alert(",
+            "<style",
+            "url(",
+        ] {
             assert!(!h.contains(bad), "{bad} survived: {h}");
         }
         assert!(h.contains("https://ok.example/") && h.contains("noopener"));
@@ -235,6 +300,13 @@ mod tests {
     #[test]
     fn header_only_parse() {
         let h = parse_headers(b"Subject: Hi\r\nFrom: a@b.c\r\nMessage-ID: <x@y>\r\n\r\n");
-        assert_eq!((h.subject.as_str(), h.from[0].email.as_str(), h.message_id.as_deref()), ("Hi", "a@b.c", Some("x@y")));
+        assert_eq!(
+            (
+                h.subject.as_str(),
+                h.from[0].email.as_str(),
+                h.message_id.as_deref()
+            ),
+            ("Hi", "a@b.c", Some("x@y"))
+        );
     }
 }
