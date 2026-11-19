@@ -1,0 +1,18 @@
+# Disposable GreenMail for scripts/perf.sh. TEST-ONLY. Separate container and ports from
+# docker-compose.yml so a perf run (which kills/restarts it) never disturbs other test runs.
+# Users are provisioned at run time via the REST API (tests/infra/provision_users.py).
+name: openmail-perf-infra
+services:
+  greenmail:
+    image: greenmail/standalone@sha256:d6db42a4fc258fec0948b1ae7b579fd06947cc92087c162ec0597972a6c36850
+    container_name: openmail-perf-greenmail
+    restart: "no"
+    network_mode: bridge
+    ports:
+      - "127.0.0.1:23143:3143"   # IMAP (plain; the perf harness fronts it with a TLS proxy)
+      - "127.0.0.1:28080:8080"   # GreenMail REST API
+    environment:
+      GREENMAIL_OPTS: >-
+        -Dgreenmail.setup.test.imap
+        -Dgreenmail.hostname=0.0.0.0
+        -Dgreenmail.auth.disabled=false

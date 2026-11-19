@@ -9,7 +9,18 @@ all-features = true
 # docs/SUPPLY_CHAIN.md ("Accepted advisories") and a reason string here.
 yanked = "deny"
 unmaintained = "all"
-ignore = []
+ignore = [
+    # Review by 2027-02-20. pin-utils 0.1.1 is archived but is only a tiny macro crate
+    # (no unsafe-soundness or vulnerability advisory); the sole path is async-imap 0.12.0
+    # (latest release), which we cannot patch. Drop this entry when async-imap moves to
+    # core::pin::pin! / pin-project-lite, or replace async-imap.
+    # Review by 2027-02-20. chrono / chrono-tz are flagged unmaintained (no vulnerability); they back
+    # the brief scheduler's cron + IANA timezone handling (croner requires chrono). Replace the
+    # scheduler's time stack when croner/an alternative moves off chrono.
+    { id = "RUSTSEC-2026-0543", reason = "unmaintained chrono via croner/openmail-briefs scheduler; no vulnerability; review 2027-02-20" },
+    { id = "RUSTSEC-2026-0555", reason = "unmaintained chrono-tz via openmail-briefs scheduler; no vulnerability; review 2027-02-20" },
+    { id = "RUSTSEC-2026-0441", reason = "unmaintained pin-utils via async-imap 0.12.0 (latest); no safe upgrade; review 2027-02-20" },
+]
 
 [licenses]
 confidence-threshold = 0.9
@@ -26,6 +37,7 @@ allow = [
     # flagged them (see docs/SUPPLY_CHAIN.md "License additions"):
     "Zlib",                  # foldhash (hashbrown <- rusqlite)
     "CDLA-Permissive-2.0",   # webpki-root-certs (CA bundle data, via reqwest)
+    "0BSD",                  # quoted_printable (lettre); public-domain-equivalent, OSI approved
 ]
 
 [bans]

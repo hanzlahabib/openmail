@@ -5,10 +5,12 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
 
 [dependencies]
 openmail-briefs.workspace = true
 openmail-core.workspace = true
+openmail-observe = { path = "../openmail-observe" }
 openmail-security.workspace = true
 openmail-smtp.workspace = true
 base64.workspace = true
@@ -24,6 +26,7 @@ tracing.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "std"] }
 rmcp = { workspace = true, features = ["client"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-util", "time"] }
 

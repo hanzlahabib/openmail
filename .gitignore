@@ -2,3 +2,4 @@
 *.pem
 .env
 config.local.toml
+__pycache__/

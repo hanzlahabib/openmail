@@ -5,21 +5,28 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
 
 [[bin]]
 name = "openmail-mcp"
 path = "src/main.rs"
 
 [dependencies]
+openmail-briefs.workspace = true
 openmail-core.workspace = true
+openmail-observe = { path = "../openmail-observe" }
 openmail-imap.workspace = true
 openmail-mcp.workspace = true
 openmail-security.workspace = true
 openmail-remote = { path = "../openmail-remote" }
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"] }
+openmail-smtp.workspace = true
+chrono = "0.4.45"
 url = "2.5.8"
 anyhow.workspace = true
 tokio.workspace = true
 secrecy.workspace = true
+serde_json.workspace = true
 
 clap = { version = "4.6", features = ["derive", "env"] }
 tracing.workspace = true
@@ -27,12 +34,10 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["f
 
 [dev-dependencies]
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls"] }
-openmail-smtp.workspace = true
 tempfile = "3"
 assert_cmd = "2.2"
 async-imap.workspace = true
 rcgen.workspace = true
-serde_json.workspace = true
 tokio-rustls.workspace = true
 
 [lints]

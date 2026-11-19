@@ -126,13 +126,37 @@ pub struct BriefArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum BriefAction {
-    /// Generate a brief now.
-    Now,
+    /// Generate a brief now (heuristic summary of mailbox metadata, not authoritative).
+    Now(BriefNowArgs),
     /// Manage scheduled briefs.
     Schedule {
         #[command(subcommand)]
         action: ScheduleAction,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum BriefFormat {
+    Md,
+    Json,
+}
+
+#[derive(Debug, Args)]
+pub struct BriefNowArgs {
+    /// How far back to look (`90m`, `24h`, `7d`); default from briefs.toml, else 24h.
+    #[arg(long, value_name = "DURATION")]
+    pub lookback: Option<String>,
+    /// Account id to include; repeat for several. Default: every configured account.
+    #[arg(long = "account", value_name = "ID")]
+    pub accounts: Vec<String>,
+    #[arg(long, value_enum, default_value_t = BriefFormat::Md)]
+    pub format: BriefFormat,
+    /// Also report mail an earlier brief already covered.
+    #[arg(long)]
+    pub include_processed: bool,
+    /// Email the brief to the owner of the [briefs.digest] account (never to anyone else).
+    #[arg(long)]
+    pub email: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -196,6 +220,25 @@ mod tests {
     fn parses_nested_subcommands() {
         let cli = Cli::try_parse_from(["openmail-mcp", "brief", "schedule", "list"]);
         assert!(cli.is_ok());
+        let cli = Cli::try_parse_from([
+            "openmail-mcp",
+            "brief",
+            "now",
+            "--lookback",
+            "12h",
+            "--account",
+            "a",
+            "--account",
+            "b",
+            "--format",
+            "json",
+        ]);
+        assert!(matches!(
+            cli.map(|c| c.command),
+            Ok(Command::Brief(BriefArgs { action: BriefAction::Now(n), .. }))
+                if n.accounts == ["a", "b"] && n.format == BriefFormat::Json
+        ));
+        assert!(Cli::try_parse_from(["openmail-mcp", "brief", "now", "--format", "xml"]).is_err());
         let cli = Cli::try_parse_from(["openmail-mcp", "serve", "--transport", "http"]);
         assert!(
             matches!(cli.map(|c| c.command), Ok(Command::Serve(a)) if a.transport == Transport::Http)

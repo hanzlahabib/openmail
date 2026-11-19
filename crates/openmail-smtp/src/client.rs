@@ -14,6 +14,8 @@ use openmail_core::backend::SecretSource;
 use openmail_core::config::{AccountConfig, AuthMethod, ServerEndpoint, TlsMode};
 use openmail_core::ids::AccountId;
 use openmail_core::{Error, ErrorCode, Result};
+use openmail_observe::metrics::Counter;
+use openmail_observe::observer::Observer;
 use secrecy::ExposeSecret;
 
 use crate::approval::ApprovalProof;
@@ -53,6 +55,7 @@ pub struct SmtpClient<O, S> {
     outbox: O,
     secrets: S,
     options: SmtpOptions,
+    observer: Observer,
 }
 
 fn coded(code: ErrorCode, msg: impl Into<String>) -> Error {
@@ -108,7 +111,15 @@ impl<O: OutboxStore, S: SecretSource> SmtpClient<O, S> {
             outbox,
             secrets,
             options,
+            observer: Observer::noop(),
         }
+    }
+
+    /// Counts attempts, uncertain outcomes and auth failures per account id. Default: no-op.
+    #[must_use]
+    pub fn with_observer(mut self, observer: Observer) -> Self {
+        self.observer = observer;
+        self
     }
 
     pub fn outbox(&self) -> &O {
@@ -172,7 +183,19 @@ impl<O: OutboxStore, S: SecretSource> SmtpClient<O, S> {
             build_message(&request, &record.message_id)?
         };
 
+        // Counted once the outbox accepted the attempt: an idempotent replay is not an attempt.
+        self.observer
+            .incr_account(Counter::SmtpAttempts, account.id.as_str());
         let result = self.deliver(account, endpoint, &record, &built).await;
+        match &result {
+            Err(DeliveryError::Uncertain(_)) => self
+                .observer
+                .incr_account(Counter::SmtpUncertain, account.id.as_str()),
+            Err(DeliveryError::NotSent(e)) if e.code() == ErrorCode::AuthFailed => self
+                .observer
+                .incr_account(Counter::AuthFailures, account.id.as_str()),
+            _ => {}
+        }
         let (state, detail) = match &result {
             Ok(()) => (OutboxState::Accepted, None),
             Err(DeliveryError::NotSent(e)) => (OutboxState::Rejected, Some(e.to_string())),
