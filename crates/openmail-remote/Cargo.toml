@@ -13,7 +13,7 @@ openmail-security.workspace = true
 openmail-mcp.workspace = true
 axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"] }
 # 0.6 line matches axum 0.8's tower stack; 0.7 changes the layer APIs.
-tower-http = { version = "0.6.11", default-features = false, features = ["limit", "timeout"] }
+tower-http = { version = "0.7.1", default-features = false, features = ["limit", "timeout"] }
 tokio.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
