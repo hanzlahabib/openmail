@@ -1,0 +1,10 @@
+From: sender@example.test
+To: alice@openmail.test
+Subject: Charset koi8-r
+Date: Mon, 02 Mar 2026 10:00:00 +0000
+Message-ID: <cs-koi8r@openmail.test>
+Content-Type: text/plain; charset="koi8-r"
+Content-Transfer-Encoding: quoted-printable
+MIME-Version: 1.0
+
+=F0=D2=C9=D7=C5=D4 =CD=C9=D2

@@ -1,0 +1,11 @@
+From: p0@example.test
+To: carol@openmail.test
+Subject: Long thread
+Date: Tue, 03 Mar 2026 09:00:00 +0000
+Message-ID: <thread-00@openmail.test>
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+MIME-Version: 1.0
+
+Thread message 0.
+> quoted earlier text
