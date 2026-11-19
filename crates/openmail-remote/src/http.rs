@@ -65,7 +65,7 @@ pub struct HttpConfig {
     pub auth: Option<Arc<AuthState>>,
     /// Served unauthenticated at `/.well-known/oauth-protected-resource` (RFC 9728).
     pub resource_metadata: Option<ProtectedResourceMetadata>,
-    /// Exact `Origin` values (scheme://host[:port]) accepted from browsers.
+    /// Exact `Origin` values (`scheme://host[:port]`) accepted from browsers.
     pub allowed_origins: Vec<String>,
     /// Accept `http(s)://localhost|127.0.0.1|[::1]` origins on any port.
     pub allow_loopback_origins: bool,
@@ -118,7 +118,7 @@ impl Readiness {
     }
 }
 
-/// TCP peer address as seen by [`rate_limit`]; a newtype so it can implement
+/// TCP peer address as seen by the per-IP rate limiter; a newtype so it can implement
 /// [`Connected`] for both the plain and the TLS listener.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ClientAddr(pub SocketAddr);
