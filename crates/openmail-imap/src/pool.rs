@@ -108,6 +108,7 @@ impl Drop for Lease {
     }
 }
 
+#[derive(Debug)]
 pub enum Flow<T> {
     Done(Result<T>),
     Retry,
