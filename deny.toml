@@ -26,6 +26,7 @@ allow = [
     # flagged them (see docs/SUPPLY_CHAIN.md "License additions"):
     "Zlib",                  # foldhash (hashbrown <- rusqlite)
     "CDLA-Permissive-2.0",   # webpki-root-certs (CA bundle data, via reqwest)
+    "0BSD",                  # quoted_printable (lettre); public-domain-equivalent, OSI approved
 ]
 
 [bans]
