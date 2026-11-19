@@ -1,5 +1,8 @@
 # Threat model
 
+> **Status warning (2026-11-19):** the authorizer, principal, rate limiter and approval verifier are implemented and unit-tested as libraries in `openmail-security`, but are **not yet wired into the MCP or SMTP request paths** (see docs/SECURITY_REVIEW.md F1, F2). Rows that say "mitigated" for authorization, approvals and rate limiting describe the library, not the running server. The only live surface today is stdio + read-only tools.
+
+
 Status per row: **Mitigated** (code + test named), **Partly** (what remains is stated), or **NOT YET MITIGATED**.
 Tests are in `crates/openmail-security/src/` unless noted. Other crates' mitigations are marked *(owner crate)* and
 are NOT verified here.
