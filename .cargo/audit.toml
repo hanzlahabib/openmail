@@ -1,0 +1,7 @@
+# Accepted advisories; keep in sync with deny.toml and docs/SUPPLY_CHAIN.md (reasons and review dates there).
+[advisories]
+ignore = [
+    "RUSTSEC-2026-0543", # chrono unmaintained (brief scheduler)
+    "RUSTSEC-2026-0555", # chrono-tz unmaintained (brief scheduler)
+    "RUSTSEC-2026-0441", # pin-utils unmaintained (async-imap)
+]

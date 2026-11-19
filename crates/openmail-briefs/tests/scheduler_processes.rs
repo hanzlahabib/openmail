@@ -19,6 +19,17 @@ const CHILD_ENV: &str = "OPENMAIL_BRIEFS_TEST_CHILD";
 const DB_ENV: &str = "OPENMAIL_BRIEFS_TEST_DB";
 const LOG_ENV: &str = "OPENMAIL_BRIEFS_TEST_LOG";
 const JOB: &str = "morning";
+const FIRE_ENV: &str = "OPENMAIL_BRIEFS_TEST_FIRE";
+
+/// Daily fire time (HH:MM UTC) one minute ago, chosen ONCE per test and handed to the child
+/// process: each process computing its own would pick a different minute after a rollover.
+fn fire_time() -> (u8, u8) {
+    let fire = Utc::now() - chrono::Duration::minutes(1);
+    (
+        u8::try_from(chrono::Timelike::hour(&fire)).unwrap(),
+        u8::try_from(chrono::Timelike::minute(&fire)).unwrap(),
+    )
+}
 
 /// Appends one line per execution to a shared file, then lingers so overlapping ticks collide.
 struct FileHandler {
@@ -41,18 +52,17 @@ impl JobHandler for FileHandler {
     }
 }
 
-fn job(store: &SqliteSchedulerStore) -> CompiledJob {
+fn job(store: &SqliteSchedulerStore, fire: (u8, u8)) -> CompiledJob {
     // Registered two minutes ago with a daily fire time one minute ago: exactly one fire is due
     // now and the next is a day away, so a test that crosses a minute boundary cannot see a
     // second one.
     let created = Utc::now() - chrono::Duration::minutes(2);
-    let fire = Utc::now() - chrono::Duration::minutes(1);
     let created = store.job_created_at(JOB, created).unwrap();
     CompiledJob::compile(JobSpec {
         id: JOB.into(),
         schedule: Schedule::Daily {
-            hour: u8::try_from(chrono::Timelike::hour(&fire)).unwrap(),
-            minute: u8::try_from(chrono::Timelike::minute(&fire)).unwrap(),
+            hour: fire.0,
+            minute: fire.1,
         },
         timezone: "UTC".into(),
         enabled: true,
@@ -64,6 +74,7 @@ fn job(store: &SqliteSchedulerStore) -> CompiledJob {
 
 fn scheduler<H: JobHandler>(
     db: &Path,
+    fire: (u8, u8),
     handler: H,
     owner: &str,
     ttl: Duration,
@@ -71,7 +82,7 @@ fn scheduler<H: JobHandler>(
     Scheduler<SystemSchedulerClock, SqliteSchedulerStore, H>,
     CompiledJob,
 ) {
-    let job = job(&SqliteSchedulerStore::open(db).unwrap());
+    let job = job(&SqliteSchedulerStore::open(db).unwrap(), fire);
     let s = Scheduler::new(
         SystemSchedulerClock,
         SqliteSchedulerStore::open(db).unwrap(),
@@ -93,8 +104,12 @@ fn child_process_tick() {
     let db = PathBuf::from(std::env::var(DB_ENV).unwrap());
     let log = PathBuf::from(std::env::var(LOG_ENV).unwrap());
     let rt = tokio::runtime::Runtime::new().unwrap();
+    let fire = std::env::var(FIRE_ENV).unwrap();
+    let (h, m) = fire.split_once(':').unwrap();
+    let fire = (h.parse().unwrap(), m.parse().unwrap());
     let (s, job) = scheduler(
         &db,
+        fire,
         FileHandler {
             log,
             who: "child",
@@ -107,7 +122,7 @@ fn child_process_tick() {
     println!("CHILD-OUTCOME {:?}", out[0].1);
 }
 
-fn run_child(db: &Path, log: &Path) -> String {
+fn run_child(db: &Path, log: &Path, fire: (u8, u8)) -> String {
     let out = Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
@@ -118,6 +133,7 @@ fn run_child(db: &Path, log: &Path) -> String {
         .env(CHILD_ENV, "1")
         .env(DB_ENV, db)
         .env(LOG_ENV, log)
+        .env(FIRE_ENV, format!("{}:{}", fire.0, fire.1))
         .output()
         .unwrap();
     assert!(
@@ -143,8 +159,10 @@ fn executions(log: &Path) -> Vec<String> {
 async fn two_processes_run_one_fire_exactly_once() {
     let dir = tempfile::tempdir().unwrap();
     let (db, log) = (dir.path().join("briefs.db"), dir.path().join("runs.log"));
+    let fire = fire_time();
     let (parent, job) = scheduler(
         &db,
+        fire,
         FileHandler {
             log: log.clone(),
             who: "parent",
@@ -166,7 +184,7 @@ async fn two_processes_run_one_fire_exactly_once() {
 
     let child_outcome = tokio::task::spawn_blocking({
         let (db, log) = (db.clone(), log.clone());
-        move || run_child(&db, &log)
+        move || run_child(&db, &log, fire)
     })
     .await
     .unwrap();
@@ -184,7 +202,7 @@ async fn two_processes_run_one_fire_exactly_once() {
     // After completion the same fire is done: a later process finds nothing due.
     let later = tokio::task::spawn_blocking({
         let (db, log) = (db.clone(), log.clone());
-        move || run_child(&db, &log)
+        move || run_child(&db, &log, fire)
     })
     .await
     .unwrap();
@@ -208,6 +226,7 @@ async fn a_process_that_dies_holding_the_lease_is_recovered_after_the_ttl() {
 
     let (b, job) = scheduler(
         &db,
+        fire_time(),
         FileHandler {
             log: log.clone(),
             who: "b",
