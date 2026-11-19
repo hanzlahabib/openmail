@@ -9,6 +9,7 @@ license.workspace = true
 [dependencies]
 openmail-core.workspace = true
 openmail-security.workspace = true
+openmail-smtp.workspace = true
 rmcp.workspace = true
 schemars.workspace = true
 serde.workspace = true

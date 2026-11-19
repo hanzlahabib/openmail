@@ -1,6 +1,5 @@
 //! stdio transport: stdout carries only JSON-RPC (rmcp owns it); diagnostics go through
 //! `tracing`, which the host binary must route to stderr.
-use openmail_core::backend::MailBackend;
 use std::future::Future;
 
 use rmcp::ServiceExt;
@@ -8,6 +7,7 @@ use rmcp::service::{QuitReason, ServerInitializeError};
 use rmcp::transport::stdio_pipes;
 use tokio::io::{AsyncRead, AsyncWrite};
 
+use crate::backend::FullBackend;
 use crate::server::OpenMailServer;
 
 #[derive(Debug, thiserror::Error)]
@@ -27,7 +27,7 @@ pub async fn serve_io<B, R, W>(
     shutdown: impl Future<Output = ()>,
 ) -> Result<(), ServeError>
 where
-    B: MailBackend,
+    B: FullBackend,
     R: AsyncRead + Send + Unpin + 'static,
     W: AsyncWrite + Send + Unpin + 'static,
 {
@@ -51,7 +51,7 @@ where
 }
 
 /// Serve on the process's stdin/stdout. Returns on EOF, SIGTERM or SIGINT.
-pub async fn serve_stdio<B: MailBackend>(server: OpenMailServer<B>) -> Result<(), ServeError> {
+pub async fn serve_stdio<B: FullBackend>(server: OpenMailServer<B>) -> Result<(), ServeError> {
     let (reader, writer) = stdio_pipes();
     serve_io(server, reader, writer, termination_signal()).await
 }

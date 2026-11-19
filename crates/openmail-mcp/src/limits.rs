@@ -8,6 +8,17 @@ pub const MAX_THREAD_MESSAGES: usize = 200;
 /// Default page size when the caller gives no `limit`.
 pub const DEFAULT_PAGE_SIZE: u32 = 20;
 
+/// Largest attachment returned inline (base64 inflates by a third and the whole result lands in
+/// a model's context, so this is far below what mail servers accept).
+pub const MAX_ATTACHMENT_BYTES: usize = 5 * 1024 * 1024;
+/// Draft/forward text bodies above this are refused: 1 MiB of text is already far beyond a
+/// human-reviewable message and bounds hashing and APPEND work.
+pub const MAX_DRAFT_BODY_BYTES: usize = 1024 * 1024;
+/// RFC 5322 line limit for a header such as Subject.
+pub const MAX_SUBJECT_CHARS: usize = 998;
+/// Same ceiling the approval binding accepts (openmail-security).
+pub const MAX_RECIPIENTS: usize = 100;
+
 /// Cut `s` to at most `max` bytes on a char boundary. Returns whether it was cut.
 pub fn truncate_utf8(mut s: String, max: usize) -> (String, bool) {
     if s.len() <= max {
