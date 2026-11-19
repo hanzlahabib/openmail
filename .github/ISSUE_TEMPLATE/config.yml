@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/OWNER/openmail-mcp/security/advisories/new # TODO(owner): set when the public repo exists
+    about: Report vulnerabilities privately, not as a public issue.
