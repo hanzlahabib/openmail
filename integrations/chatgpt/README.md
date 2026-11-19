@@ -1,44 +1,53 @@
 # Connecting OpenMail MCP to ChatGPT
 
-**Status: NOT VERIFIED, NOT PUBLISHED.** Nobody has connected a live ChatGPT workspace to this
-server. This guide records what OpenAI's official documentation reportedly requires (see
-`docs/PROTOCOL_COMPATIBILITY.md`, section 3, which itself rests on search summaries of official
-pages, not full reads) and what OpenMail's code is designed to provide. OpenMail is **not** listed
-in any ChatGPT directory, and ChatGPT cannot schedule OpenMail briefs natively (see
-[Briefs](#briefs-and-scheduling)). Re-check the linked OpenAI pages before relying on any step; they
-change often and some were reported as old.
+**Status: server side verified locally; ChatGPT connection NOT tested, NOT PUBLISHED.** Nobody has
+connected a live ChatGPT workspace to this server (that needs a public HTTPS endpoint and an
+OAuth authorization server, plus an owner account). The HTTP endpoint itself was exercised with
+generic MCP clients against real IMAP: see [VERIFICATION.md](VERIFICATION.md) (2026-11-19). OpenAI
+claims below were re-checked against official OpenAI pages on 2026-11-19 (URLs in VERIFICATION.md);
+anything not confirmable is marked UNVERIFIED. OpenMail is **not** listed in any ChatGPT directory,
+and ChatGPT-native scheduling is not relied on (see [Briefs](#briefs-and-scheduling)).
 
 ## What ChatGPT needs, and what OpenMail has
 
-| ChatGPT requirement (reported) | OpenMail |
+| ChatGPT requirement (OpenAI docs, 2026-11-19) | OpenMail |
 |---|---|
-| Stable, publicly reachable **HTTPS** Streamable HTTP endpoint, typically `/mcp` | `openmail-mcp serve --transport http` refuses to start without TLS and auth; you must put it behind a public HTTPS name yourself (reverse proxy or tunnel). Not verified end to end. |
-| Local stdio is unreachable from ChatGPT | True: stdio is for local clients only. |
-| OAuth per MCP authorization spec: protected-resource metadata, `401` + `WWW-Authenticate`, auth code + PKCE `S256`, `resource` parameter, audience and scope checks per call | `openmail-remote` implements the resource-server half (RFC 9728 metadata, `WWW-Authenticate`, JWT audience/scope validation). It does **not** run an authorization server: you need an external OAuth provider that issues tokens for your resource URL. |
-| Alternative: "no authentication" | **Do not use for mail.** OpenAI says servers exposing customer data should authenticate; this is a mailbox. |
-| Plan: custom MCP servers reported for Business and Enterprise/Edu; Pro reported read/fetch-only; Plus UNVERIFIED | Check your plan in the OpenAI help center before starting. |
+| Public HTTPS Streamable HTTP endpoint, typically `/mcp` (SSE also listed), or OpenAI's "Secure MCP Tunnel" for private servers | `openmail-mcp serve --transport http` serves `POST/GET/DELETE /mcp` over in-process TLS and refuses to start without TLS and auth. You provide the public name (reverse proxy re-encrypting to the upstream, see `docs/deployment/REMOTE.md`). Locally verified; no public deployment tested. |
+| Auth options in ChatGPT: OAuth, No authentication, or mixed. ChatGPT **cannot send custom API keys / static bearer tokens** | OpenMail's static bearer token mode (`OPENMAIL_HTTP_AUTH_TOKEN_FILE`) is **incompatible with ChatGPT**; it is for other clients (curl, Inspector, Claude, VS Code). For ChatGPT use JWT mode. "No authentication" must not be used for a mailbox. |
+| OAuth 2.1 per MCP authorization spec: RFC 9728 metadata, `WWW-Authenticate` challenge, auth code + PKCE `S256`, `resource` param copied into token audience, per-request issuer/audience/expiry/scope checks | OpenMail is the **resource server only**. It serves `/.well-known/oauth-protected-resource`, answers 401 with `WWW-Authenticate: Bearer resource_metadata="..."`, and in JWT mode validates iss/aud/exp/scopes (ES/RS/PS/EdDSA) against the IdP's JWKS. It runs **no authorization server**: you need an external one that publishes `/.well-known/oauth-authorization-server` (or OIDC discovery) with `S256`, issues tokens whose `aud` is exactly `https://<host>/mcp`, and supports CIMD, DCR, or a pre-registered client id/secret entered in ChatGPT. |
+| ChatGPT redirect URI to allowlist at the IdP | `https://chatgpt.com/connector_platform_oauth_redirect` (or the `.../connector/oauth/{callback_id}` URL ChatGPT shows you); copy the exact value from ChatGPT. |
+| Tool metadata: tools lacking `readOnlyHint` are treated as write actions | All current OpenMail tools set `readOnlyHint: true`. OpenMail does not emit `securitySchemes` / `_meta["mcp/www_authenticate"]`, so ChatGPT will not show a per-tool sign-in UI; connector-level OAuth is what applies. |
+| Plan availability for custom MCP servers | UNVERIFIED (OpenAI help article returned 403; docs only say workspace permissions and Lockdown apply, web only). |
 
-## Steps (unverified path)
+## Steps (end to end not tested)
 
-1. **Config.** Keep every account `read_only = true` (the default) with no write permissions.
+1. **Config.** Keep every account read-only (the default, no write permissions).
    ```toml
-   [[accounts]]
+   [[account]]
    id = "work"
-   read_only = true          # default; send/draft/delete stay unavailable
+   read_only = true
    ```
-2. **Public HTTPS + auth.** Terminate TLS in a reverse proxy (or pass the TLS cert/key env vars the
-   CLI reads) and run:
+2. **Public HTTPS + JWT mode** (not the token file; ChatGPT cannot send it):
    ```bash
-   openmail-mcp serve --transport http --bind 127.0.0.1:8765 --config ~/.config/openmail/config.toml
+   OPENMAIL_HTTP_TLS_CERT=... OPENMAIL_HTTP_TLS_KEY=... \
+   OPENMAIL_HTTP_PUBLIC_URL=https://mail-mcp.example.com \
+   OPENMAIL_HTTP_JWT_ISSUER=https://idp.example.com/ \
+   OPENMAIL_HTTP_JWT_AUDIENCE=https://mail-mcp.example.com/mcp \
+   OPENMAIL_HTTP_JWT_JWKS_URL=https://idp.example.com/.well-known/jwks.json \
+   OPENMAIL_HTTP_JWT_SCOPE_ACCOUNTS='mail:read=work' \
+   openmail-mcp serve --transport http --bind 127.0.0.1:8765 --config ~/.config/openmail-mcp/config.toml
    ```
-   Keep the bind on loopback and expose only the proxy. For private testing without opening inbound
-   ports, OpenAI documents a "Secure MCP Tunnel" (private testing only, not for distribution).
-3. **OAuth provider.** Configure an external authorization server so that tokens carry
-   `aud` = your exact resource URL and a scope that maps to the account(s) you allow. Unmapped
-   scopes grant no accounts.
-4. **Add the server in ChatGPT** (Plugins / custom connection UI; wording varies by plan and date),
-   enter `https://<your-host>/mcp`, choose OAuth, complete the consent screen.
-5. **Run [TEST_CHECKLIST.md](TEST_CHECKLIST.md)** before trusting it with a real mailbox.
+   The JWKS URL must be a public https host (loopback, private and single-label hosts are refused).
+   Put the proxy in front per `docs/deployment/REMOTE.md`. For private testing without inbound
+   ports OpenAI documents a Secure MCP Tunnel (OpenAI-side feature; not tried here).
+3. **Authorization server.** Configure it as in the table. Unmapped scopes grant no accounts.
+4. **Add the server in ChatGPT** (docs call it adding a plugin / custom MCP server, web only;
+   wording varies), enter `https://<your-host>/mcp`, choose OAuth and the registration method your
+   IdP supports.
+5. **Run [TEST_CHECKLIST.md](TEST_CHECKLIST.md).**
+
+Known limitation seen in verification: in static-token mode the protected-resource metadata lists
+the server itself as `authorization_servers` (there is none). In JWT mode it lists your issuer.
 
 ## Recommended tool subset and permissions
 
@@ -54,9 +63,10 @@ Default posture: **read-only plus briefs, send OFF.**
 
 Enforcement lives in `openmail-security` and the account config, not in tool descriptions or in
 ChatGPT's UI. Prefer a dedicated low-privilege mailbox or an app-password/OAuth scope that cannot
-send, so a policy bug cannot become an outgoing message. Final MCP tool names were not defined in
-`openmail-mcp` when this was written; check `tools/list` from your build instead of trusting any
-list in this file.
+send, so a policy bug cannot become an outgoing message. Tools are named `mail_*` (read: `mail_list_accounts`, `mail_list_folders`, `mail_list_messages`,
+`mail_search_messages`, `mail_get_message`, `mail_get_headers`, `mail_get_thread`,
+`mail_list_attachments`, `mail_get_attachment`, `mail_get_folder_status`, `mail_test_connection`);
+write groups appear only where an account grants the permission. Check `tools/list` on your build.
 
 ## Prompt injection
 
@@ -102,10 +112,11 @@ it, per the OpenAI docs summarized in the compatibility doc.
 
 ## Not verified / not done
 
-- No live ChatGPT connection; no OAuth callback URL allowlist research; no plan-matrix verification
-  (Plus limits UNVERIFIED).
+- **No live ChatGPT connection**; no OAuth flow run; no IdP configured; no public HTTPS endpoint.
+- Plan matrix (Plus etc.), retention/training terms, and scheduled tasks calling custom MCP: UNVERIFIED.
 - No directory submission; no Apps SDK widget.
-- `openmail-mcp serve --transport http` was documented from the CLI definition; at the time of
-  writing the CLI's http serve backend was a seam that fails with "not wired yet" until the remote
-  crate is linked. Confirm your build actually serves before following the steps.
-- Authorization server setup is left to you; no reference IdP configuration is provided.
+- Locally verified only (see VERIFICATION.md): TLS + bearer edge, 401/challenge, metadata, Origin/Host
+  rejection, session handling, read tools over real IMAP via Inspector CLI and a raw client.
+  JWT mode through the real binary was not run (JWKS fetch refuses loopback); it is covered by
+  in-process tests only.
+- No reference authorization server configuration is provided.
