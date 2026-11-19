@@ -24,6 +24,8 @@ tracing.workspace = true
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "ansi"] }
 
 [dev-dependencies]
+openmail-smtp.workspace = true
+tempfile = "3"
 assert_cmd = "2.2"
 async-imap.workspace = true
 rcgen.workspace = true
