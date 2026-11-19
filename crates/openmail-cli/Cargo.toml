@@ -15,6 +15,8 @@ openmail-core.workspace = true
 openmail-imap.workspace = true
 openmail-mcp.workspace = true
 openmail-security.workspace = true
+openmail-remote = { path = "../openmail-remote" }
+url = "2.5.8"
 anyhow.workspace = true
 tokio.workspace = true
 secrecy.workspace = true
@@ -24,6 +26,7 @@ tracing.workspace = true
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "ansi"] }
 
 [dev-dependencies]
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls"] }
 openmail-smtp.workspace = true
 tempfile = "3"
 assert_cmd = "2.2"

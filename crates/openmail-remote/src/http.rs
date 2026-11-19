@@ -13,17 +13,22 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use axum::Router;
+use axum::extract::connect_info::Connected;
 use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use sha2::{Digest, Sha256};
+use axum::serve::{IncomingStream, Listener};
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::timeout::TimeoutLayer;
 
+use crate::auth::{AuthState, ProtectedResourceMetadata, require_auth};
+
 /// Path the MCP service is mounted at.
 pub const MCP_PATH: &str = "/mcp";
+/// RFC 9728 well-known location of the protected-resource metadata.
+pub const RESOURCE_METADATA_PATH: &str = "/.well-known/oauth-protected-resource";
 /// MCP requests are small JSON-RPC envelopes; 1 MiB leaves room for large
 /// tool arguments (drafts) without letting a client stream unbounded bodies.
 pub const DEFAULT_MAX_BODY_BYTES: usize = 1024 * 1024;
@@ -41,8 +46,6 @@ const MAX_TRACKED_IPS: usize = 10_000;
 pub enum HttpError {
     #[error("refusing to bind non-loopback address {0} without bearer auth configured")]
     UnauthenticatedPublicBind(SocketAddr),
-    #[error("bearer auth is configured with no tokens")]
-    EmptyTokenSet,
     #[error("invalid rate limit: rate must be > 0 and burst >= 1")]
     InvalidRateLimit,
     #[error("failed to bind {addr}: {source}")]
@@ -54,52 +57,14 @@ pub enum HttpError {
     Serve(#[source] std::io::Error),
 }
 
-/// Set of accepted bearer tokens, kept only as SHA-256 digests and compared
-/// without early exit.
-#[derive(Clone)]
-pub struct BearerTokens {
-    digests: Vec<[u8; 32]>,
-}
-
-impl std::fmt::Debug for BearerTokens {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("BearerTokens")
-            .field("count", &self.digests.len())
-            .finish()
-    }
-}
-
-impl BearerTokens {
-    pub fn new<'a>(tokens: impl IntoIterator<Item = &'a str>) -> Result<Self, HttpError> {
-        let digests: Vec<[u8; 32]> = tokens
-            .into_iter()
-            .filter(|t| !t.is_empty())
-            .map(|t| Sha256::digest(t.as_bytes()).into())
-            .collect();
-        if digests.is_empty() {
-            return Err(HttpError::EmptyTokenSet);
-        }
-        Ok(Self { digests })
-    }
-
-    fn verify(&self, candidate: &str) -> bool {
-        let digest: [u8; 32] = Sha256::digest(candidate.as_bytes()).into();
-        // Fold over every stored digest so timing does not reveal which matched.
-        self.digests.iter().fold(false, |ok, known| {
-            let diff = known
-                .iter()
-                .zip(digest.iter())
-                .fold(0u8, |acc, (a, b)| acc | (a ^ b));
-            ok | (diff == 0)
-        })
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct HttpConfig {
     pub bind: SocketAddr,
-    /// `None` is only legal on a loopback bind.
-    pub auth: Option<BearerTokens>,
+    /// Authenticates every `/mcp` request and attaches the caller's
+    /// [`openmail_security::Principal`]. `None` is only legal on a loopback bind.
+    pub auth: Option<Arc<AuthState>>,
+    /// Served unauthenticated at `/.well-known/oauth-protected-resource` (RFC 9728).
+    pub resource_metadata: Option<ProtectedResourceMetadata>,
     /// Exact `Origin` values (scheme://host[:port]) accepted from browsers.
     pub allowed_origins: Vec<String>,
     /// Accept `http(s)://localhost|127.0.0.1|[::1]` origins on any port.
@@ -117,6 +82,7 @@ impl HttpConfig {
         Self {
             bind,
             auth: None,
+            resource_metadata: None,
             allowed_origins: Vec::new(),
             allow_loopback_origins: true,
             max_body_bytes: DEFAULT_MAX_BODY_BYTES,
@@ -149,6 +115,23 @@ impl Readiness {
 
     pub fn is_ready(&self) -> bool {
         self.0.load(Ordering::Acquire)
+    }
+}
+
+/// TCP peer address as seen by [`rate_limit`]; a newtype so it can implement
+/// [`Connected`] for both the plain and the TLS listener.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClientAddr(pub SocketAddr);
+
+impl Connected<IncomingStream<'_, tokio::net::TcpListener>> for ClientAddr {
+    fn connect_info(stream: IncomingStream<'_, tokio::net::TcpListener>) -> Self {
+        Self(*stream.remote_addr())
+    }
+}
+
+impl Connected<IncomingStream<'_, crate::tls::TlsListener>> for ClientAddr {
+    fn connect_info(stream: IncomingStream<'_, crate::tls::TlsListener>) -> Self {
+        Self(*stream.remote_addr())
     }
 }
 
@@ -269,7 +252,7 @@ fn deny(status: StatusCode, msg: &'static str) -> Response {
 
 async fn rate_limit(
     State(state): State<AppState>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    ConnectInfo(ClientAddr(peer)): ConnectInfo<ClientAddr>,
     req: Request,
     next: Next,
 ) -> Response {
@@ -303,23 +286,31 @@ async fn validate_origin(State(state): State<AppState>, req: Request, next: Next
     next.run(req).await
 }
 
-async fn require_bearer(State(state): State<AppState>, req: Request, next: Next) -> Response {
-    if let Some(tokens) = &state.config.auth {
-        let presented = req
-            .headers()
-            .get(header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.split_once(' '))
-            .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("bearer"))
-            .map(|(_, token)| token.trim());
-        if !presented.is_some_and(|t| tokens.verify(t)) {
-            let mut resp = deny(StatusCode::UNAUTHORIZED, "missing or invalid bearer token");
-            resp.headers_mut()
-                .insert(header::WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
-            return resp;
-        }
+/// Authenticate with the configured [`AuthState`]. The loopback-only
+/// no-auth mode passes requests through without a principal; a handler
+/// that needs one must treat its absence as a denial.
+async fn require_principal(State(state): State<AppState>, req: Request, next: Next) -> Response {
+    match &state.config.auth {
+        Some(auth) => require_auth(State(Arc::clone(auth)), req, next).await,
+        None => next.run(req).await,
     }
-    next.run(req).await
+}
+
+async fn resource_metadata(State(state): State<AppState>) -> Response {
+    match &state.config.resource_metadata {
+        Some(m) => match serde_json::to_vec(m) {
+            Ok(body) => (
+                [(
+                    header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                )],
+                body,
+            )
+                .into_response(),
+            Err(_) => deny(StatusCode::INTERNAL_SERVER_ERROR, "metadata unavailable"),
+        },
+        None => deny(StatusCode::NOT_FOUND, "not found"),
+    }
 }
 
 async fn healthz() -> &'static str {
@@ -352,7 +343,7 @@ pub fn router(config: HttpConfig, mcp: Router, readiness: Readiness) -> Result<R
         .layer(RequestBodyLimitLayer::new(state.config.max_body_bytes))
         .layer(middleware::from_fn_with_state(
             state.clone(),
-            require_bearer,
+            require_principal,
         ))
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -361,15 +352,22 @@ pub fn router(config: HttpConfig, mcp: Router, readiness: Readiness) -> Result<R
     Ok(Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
+        .route(RESOURCE_METADATA_PATH, get(resource_metadata))
         .with_state(state.clone())
         .nest(MCP_PATH, protected)
         // Outermost so unauthenticated floods are throttled before auth work.
         .layer(middleware::from_fn_with_state(state, rate_limit)))
 }
 
-/// Bind, mark ready, serve until `shutdown` resolves, then drain in-flight
-/// requests. `/readyz` flips to 503 as soon as shutdown begins so load
-/// balancers stop routing before connections close.
+/// After shutdown begins, in-flight requests get this long to finish. Long-lived
+/// SSE streams would otherwise hold the process open forever.
+pub const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
+
+/// Bind plain TCP, mark ready, serve until `shutdown` resolves, then drain
+/// in-flight requests. `/readyz` flips to 503 as soon as shutdown begins so
+/// load balancers stop routing before connections close. Plaintext is only
+/// acceptable on loopback or behind a trusted TLS-terminating proxy; see
+/// [`serve_tls`].
 pub async fn serve(
     config: HttpConfig,
     mcp: Router,
@@ -384,31 +382,74 @@ pub async fn serve(
     serve_listener(listener, app, readiness, shutdown).await
 }
 
-async fn serve_listener(
-    listener: tokio::net::TcpListener,
+/// Like [`serve`] but terminates TLS in-process.
+pub async fn serve_tls(
+    config: HttpConfig,
+    mcp: Router,
+    readiness: Readiness,
+    tls: Arc<tokio_rustls::rustls::ServerConfig>,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> Result<(), HttpError> {
+    let addr = config.bind;
+    let app = router(config, mcp, readiness.clone())?;
+    let tcp = tokio::net::TcpListener::bind(addr)
+        .await
+        .map_err(|source| HttpError::Bind { addr, source })?;
+    let listener = crate::tls::TlsListener::new(tcp, tls).map_err(HttpError::Serve)?;
+    serve_listener(listener, app, readiness, shutdown).await
+}
+
+/// Serve on an already-bound listener (lets callers learn an ephemeral port).
+pub async fn serve_listener<L>(
+    listener: L,
     app: Router,
     readiness: Readiness,
     shutdown: impl Future<Output = ()> + Send + 'static,
-) -> Result<(), HttpError> {
+) -> Result<(), HttpError>
+where
+    L: Listener,
+    L::Addr: std::fmt::Debug,
+    ClientAddr: for<'a> Connected<IncomingStream<'a, L>>,
+{
     readiness.set(true);
     let flag = readiness.clone();
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .with_graceful_shutdown(async move {
-        shutdown.await;
-        flag.set(false);
-    })
-    .await
-    .map_err(HttpError::Serve)
+    let (begun_tx, begun_rx) = tokio::sync::oneshot::channel::<()>();
+    let server = std::future::IntoFuture::into_future(
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<ClientAddr>(),
+        )
+        .with_graceful_shutdown(async move {
+            shutdown.await;
+            flag.set(false);
+            // The receiver is gone only if serving already ended.
+            let _ = begun_tx.send(());
+        }),
+    );
+    tokio::pin!(server);
+    tokio::select! {
+        result = &mut server => result.map_err(HttpError::Serve),
+        () = async {
+            if begun_rx.await.is_ok() {
+                tokio::time::sleep(SHUTDOWN_GRACE).await;
+            } else {
+                std::future::pending::<()>().await;
+            }
+        } => {
+            tracing::warn!("shutdown grace period elapsed; closing remaining connections");
+            Ok(())
+        }
+    }
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::auth::{Authenticator, HttpsJwksFetcher, StaticBearer};
     use axum::routing::post;
+    use openmail_core::ids::AccountId;
+    use openmail_security::Action;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
     use tokio::sync::oneshot;
@@ -422,6 +463,16 @@ mod tests {
         task: tokio::task::JoinHandle<Result<(), HttpError>>,
     }
 
+    fn test_auth() -> Arc<AuthState> {
+        Arc::new(AuthState {
+            authenticator: Arc::new(Authenticator::<HttpsJwksFetcher>::Static(
+                StaticBearer::new(TOKEN, [Action::Read], [AccountId::new("work").unwrap()]),
+            )),
+            resource_metadata_url: "https://mail.example.com/.well-known/oauth-protected-resource"
+                .into(),
+        })
+    }
+
     fn mcp_stub() -> Router {
         Router::new().route(
             "/",
@@ -431,7 +482,7 @@ mod tests {
 
     async fn start(tweak: impl FnOnce(&mut HttpConfig)) -> Harness {
         let mut cfg = HttpConfig::new("127.0.0.1:0".parse().unwrap());
-        cfg.auth = Some(BearerTokens::new([TOKEN]).unwrap());
+        cfg.auth = Some(test_auth());
         tweak(&mut cfg);
         let readiness = Readiness::default();
         let app = router(cfg, mcp_stub(), readiness.clone()).unwrap();
@@ -604,14 +655,13 @@ mod tests {
             Err(HttpError::UnauthenticatedPublicBind(_))
         ));
         let mut ok = HttpConfig::new("0.0.0.0:8080".parse().unwrap());
-        ok.auth = Some(BearerTokens::new([TOKEN]).unwrap());
+        ok.auth = Some(test_auth());
         assert!(ok.validate().is_ok());
         assert!(
             HttpConfig::new("[::1]:8080".parse().unwrap())
                 .validate()
                 .is_ok()
         );
-        assert!(BearerTokens::new(["", ""]).is_err());
     }
 
     #[test]

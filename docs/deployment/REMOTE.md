@@ -4,16 +4,28 @@ Status legend: **[built]** exists in code today, **[planned]** documented intent
 
 ## What the binary enforces today [built]
 
-`openmail-mcp serve --transport http --bind <host:port>` refuses to start unless **both**:
+`openmail-mcp serve --transport http --bind <host:port>` serves the real MCP service over
+in-process TLS (rustls). It refuses to start unless **both** TLS and authentication are configured:
 
 | Env var | Meaning |
 |---|---|
 | `OPENMAIL_HTTP_TLS_CERT`, `OPENMAIL_HTTP_TLS_KEY` | PEM certificate chain and key paths |
-| `OPENMAIL_HTTP_AUTH_TOKEN_FILE` | file holding the static bearer token (constant-time compare) |
+| `OPENMAIL_HTTP_AUTH_TOKEN_FILE` | static bearer token file (constant-time compare). Must be mode 600; the principal may read every configured account, with the actions in `OPENMAIL_HTTP_STATIC_ACTIONS` (default `read`) |
+| `OPENMAIL_HTTP_JWT_ISSUER`, `_AUDIENCE`, `_JWKS_URL`, `_SCOPE_ACCOUNTS` | **instead of** the token file: validate OAuth JWTs (ES/RS/PS/EdDSA only) against the issuer's JWKS. `_AUDIENCE` is this server's `/mcp` URL; `_SCOPE_ACCOUNTS` maps scopes to accounts, e.g. `mail:work=work,shared;mail:home=home` |
+| `OPENMAIL_HTTP_PUBLIC_URL` | public base URL (`https://mail-mcp.example.com`), advertised in `WWW-Authenticate`; its host joins the `Host` allowlist |
+| `OPENMAIL_HTTP_ALLOWED_HOSTS`, `_ALLOWED_ORIGINS` | extra comma-separated `Host` values / browser `Origin`s to accept |
 
-Paths only; secrets never go on the command line. Endpoints: `POST /mcp` (authenticated),
-`GET /healthz`, `GET /readyz`. A JWT/JWKS mode exists in `openmail-remote` (`auth.rs`); the CLI
-wiring for it is **[planned]** — the CLI currently resolves only the static-token inputs above.
+Exactly one of token file or JWT may be set. Token scopes `mail:read|organize|draft|send|delete`
+grant those actions; the accounts a token may touch come only from the scope mapping, and account
+permissions in the config still apply on top. A token limited to account A cannot name account B
+(the answer is the same `ACCESS_DENIED` as for an unknown account).
+
+Paths only; secrets never go on the command line. Endpoints: `POST|GET|DELETE /mcp`
+(authenticated), `GET /.well-known/oauth-protected-resource` (RFC 9728), `GET /healthz`,
+`GET /readyz`. Requests carrying a disallowed `Origin` get 403, bodies over 1 MiB 413, more than
+20 req/s per client address 429. An MCP session is bound to the principal that created it; another
+principal presenting its id gets 404. On SIGTERM `/readyz` flips to 503, open streams are cancelled
+and in-flight requests get 10 s to finish.
 
 Because the listener itself demands TLS, a reverse proxy must re-encrypt to the upstream
 (`https://127.0.0.1:8765`). Use a certificate the proxy trusts (internal CA or pinned self-signed).
@@ -158,5 +170,6 @@ curl -si -H "Authorization: Bearer $(cat /etc/openmail/token)" -X POST \
 
 ## Not done
 
-- No automated test of the proxy snippets or the unit file; JWT mode not selectable from the CLI;
-  no mTLS; no per-client tokens (single shared static token); no systemd socket activation.
+- No automated test of the proxy snippets or the unit file; no mTLS; no per-client static tokens
+  (use JWT mode for per-client identity); no systemd socket activation; JWT mode is tested against
+  a local JWKS only, not a real identity provider; no dynamic client registration endpoint.
