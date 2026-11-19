@@ -7,8 +7,8 @@ use openmail_core::backend::{MailBackend, MailOrganizer, SecretSource};
 use openmail_core::config::{AccountConfig, Limits};
 use openmail_core::ids::{AccountId, MessageRef};
 use openmail_core::model::{
-    AttachmentMeta, ConnectionReport, Folder, FolderStatus, Message, MessageSummary, Page,
-    PageRequest, SearchQuery, Untrusted,
+    ConnectionReport, Folder, FolderStatus, Message, MessageSummary, Page, PageRequest,
+    SearchQuery, Untrusted,
 };
 use openmail_core::{Error, ErrorCode, Result};
 use tokio_rustls::rustls::pki_types::CertificateDer;
@@ -32,12 +32,6 @@ const MAX_THREAD_SEED_IDS: usize = 20;
 /// Normalized subjects shorter than this are too generic for heuristic matching.
 const MIN_HEURISTIC_SUBJECT_LEN: usize = 4;
 const MAX_HEURISTIC_MATCHES: usize = 50;
-
-#[derive(Debug, Clone)]
-pub struct AttachmentData {
-    pub meta: AttachmentMeta,
-    pub bytes: Vec<u8>,
-}
 
 #[derive(Debug)]
 pub struct ImapBackend {
@@ -174,29 +168,6 @@ impl ImapBackend {
             )
         })?;
         Ok((raw, ops::map_flags(f.flags()), f.size))
-    }
-
-    /// Fetches one attachment's decoded bytes. Not part of the core trait; used by
-    /// the MCP layer once attachment download is exposed.
-    pub async fn fetch_attachment(
-        &self,
-        r: &MessageRef,
-        index: u32,
-        max_bytes: usize,
-    ) -> Result<AttachmentData> {
-        let (raw, _, _) = with_session!(self.pool, &r.account, true, |s| {
-            Self::fetch_raw_message(s, r).await
-        })?;
-        let (meta, bytes) = mime::attachment_bytes(&raw, index).ok_or_else(|| {
-            Error::new(ErrorCode::MessageNotFound, "attachment index out of range")
-        })?;
-        if bytes.len() > max_bytes {
-            return Err(Error::new(
-                ErrorCode::LimitExceeded,
-                format!("attachment is {} bytes, limit is {max_bytes}", bytes.len()),
-            ));
-        }
-        Ok(AttachmentData { meta, bytes })
     }
 
     /// Thread with relationship labels; `get_thread` returns only the exact members.

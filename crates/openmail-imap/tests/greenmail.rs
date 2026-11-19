@@ -7,7 +7,7 @@ mod harness;
 
 use harness::*;
 use openmail_core::ErrorCode;
-use openmail_core::backend::{MailBackend, MailOrganizer};
+use openmail_core::backend::{AttachmentSource, MailBackend, MailOrganizer};
 use openmail_core::config::{Limits, TlsMode};
 use openmail_core::ids::{AccountId, MessageRef};
 use openmail_core::model::{PageRequest, SearchQuery};
@@ -322,10 +322,10 @@ async fn fetch_search_and_pagination() {
     assert_eq!(msg.body.text.as_ref().unwrap().0.trim(), "see file");
     assert_eq!(msg.attachments.len(), 1);
     assert_eq!(msg.attachments[0].filename.as_deref(), Some("a.pdf"));
-    let data = b.fetch_attachment(&pdf.reference, 0, 1024).await.unwrap();
+    let data = b.get_attachment(&pdf.reference, 0, 1024).await.unwrap();
     assert!(data.bytes.starts_with(b"%PDF"));
     assert_eq!(
-        b.fetch_attachment(&pdf.reference, 0, 2)
+        b.get_attachment(&pdf.reference, 0, 2)
             .await
             .unwrap_err()
             .code(),
