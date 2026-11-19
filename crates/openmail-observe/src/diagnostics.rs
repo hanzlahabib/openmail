@@ -143,6 +143,22 @@ pub fn safe_diagnostic_export_string(value: &Value) -> String {
     serde_json::to_string_pretty(&safe_diagnostic_export(value)).unwrap_or_default()
 }
 
+/// The operator's diagnostic bundle (`doctor --export-diagnostics`): version/platform, the
+/// caller's config and check summaries, and metric counters, all through the safe export.
+/// `details` must already exclude mail content; the scrub is a second line of defence, not a
+/// license to pass bodies in.
+pub fn diagnostic_bundle(details: &Value, metrics: Option<&crate::metrics::Metrics>) -> String {
+    let mut root = Map::new();
+    root.insert("version".to_owned(), Value::from(env!("CARGO_PKG_VERSION")));
+    root.insert("os".to_owned(), Value::from(std::env::consts::OS));
+    root.insert("arch".to_owned(), Value::from(std::env::consts::ARCH));
+    root.insert("details".to_owned(), details.clone());
+    if let Some(m) = metrics {
+        root.insert("metrics".to_owned(), m.snapshot_json());
+    }
+    safe_diagnostic_export_string(&Value::Object(root))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,5 +240,22 @@ mod tests {
         let s = scrub_text("Authorization: Bearer abc.def.ghi next");
         assert!(!s.contains("abc.def.ghi"));
         assert!(s.contains("next"));
+    }
+
+    #[test]
+    fn bundle_includes_metrics_and_never_leaks_canaries() {
+        use crate::metrics::{Counter, Labels, Metrics};
+        let m = Metrics::new();
+        m.inc_labeled(Counter::AuthFailures, &Labels::none().account("work"));
+        let details = json!({
+            "accounts": [{ "id": "work", "email": CANARY_ADDR, "password": CANARY_PASSWORD }],
+            "note": format!("login as {CANARY_ADDR} with Authorization: Bearer {CANARY_TOKEN} failed"),
+        });
+        let out = diagnostic_bundle(&details, Some(&m));
+        for canary in [CANARY_ADDR, CANARY_PASSWORD, CANARY_TOKEN, "canary.person"] {
+            assert!(!out.contains(canary), "leaked {canary}: {out}");
+        }
+        assert!(out.contains("auth_failures"), "{out}");
+        assert!(out.contains("\"version\""), "{out}");
     }
 }

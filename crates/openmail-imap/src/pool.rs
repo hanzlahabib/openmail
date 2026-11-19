@@ -5,13 +5,15 @@
 //! starved by idle ones elsewhere.
 use std::collections::HashMap;
 use std::pin::pin;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::time::Duration;
 
 use openmail_core::backend::SecretSource;
 use openmail_core::config::{AccountConfig, Limits};
 use openmail_core::ids::AccountId;
 use openmail_core::{Error, ErrorCode, Result};
+use openmail_observe::metrics::Counter;
+use openmail_observe::observer::Observer;
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 use tokio::time::{Instant, timeout};
 use tokio_rustls::TlsConnector;
@@ -41,6 +43,8 @@ struct Inner {
     available: Notify,
     secrets: Arc<dyn SecretSource>,
     tls: TlsConnector,
+    /// Swapped in after construction (see [`Pool::set_observer`]); read only on failure paths.
+    observer: RwLock<Observer>,
 }
 
 #[derive(Clone)]
@@ -191,8 +195,27 @@ impl Pool {
                 available: Notify::new(),
                 secrets,
                 tls,
+                observer: RwLock::new(Observer::noop()),
             }),
         }
+    }
+
+    /// Attaches the metrics handle. A setter rather than a constructor argument so the backend
+    /// constructors keep their signatures; the default is a no-op.
+    pub fn set_observer(&self, observer: Observer) {
+        *self
+            .inner
+            .observer
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = observer;
+    }
+
+    fn observer(&self) -> Observer {
+        self.inner
+            .observer
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     pub fn account(&self, id: &AccountId) -> Result<&AccountConfig> {
@@ -312,9 +335,24 @@ impl Pool {
         let secret = tokio::task::spawn_blocking(move || secrets.resolve(&cred))
             .await
             .map_err(|_| ImapError::core(ErrorCode::Internal, "secret resolution task failed"))??;
-        let session = timeout(wait, conn::open(&slot.cfg, &secret, &self.inner.tls))
+        let opened = timeout(wait, conn::open(&slot.cfg, &secret, &self.inner.tls))
             .await
-            .map_err(|_| ImapError::Timeout)??;
+            .map_err(|_| ImapError::Timeout)
+            .and_then(|r| r);
+        let session = match opened {
+            Ok(s) => s,
+            Err(e) => {
+                // Auth rejections are their own signal: a burst of them means a bad or revoked
+                // credential, not a network problem.
+                let counter = if matches!(e, ImapError::Auth) {
+                    Counter::AuthFailures
+                } else {
+                    Counter::ImapConnectionFailures
+                };
+                self.observer().incr_account(counter, id.as_str());
+                return Err(e);
+            }
+        };
         tracing::debug!(account = %id, "opened IMAP session");
         Ok(Lease {
             session: Some(session),
@@ -347,6 +385,8 @@ impl Pool {
                 lease.discard();
                 tracing::debug!(account = %lease.account, attempt, "IMAP session failed, discarded");
                 if attempt < attempts {
+                    self.observer()
+                        .incr_account(Counter::Retries, lease.account.as_str());
                     Flow::Retry
                 } else {
                     Flow::Done(Err(e.into()))

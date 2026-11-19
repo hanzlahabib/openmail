@@ -8,6 +8,7 @@ license.workspace = true
 
 [dependencies]
 openmail-core.workspace = true
+openmail-observe = { path = "../openmail-observe" }
 secrecy.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
@@ -23,6 +24,7 @@ idna = "1"
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
+proptest = "1.12"
 base64.workspace = true
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring", "pem"] }
 tempfile = "3"
