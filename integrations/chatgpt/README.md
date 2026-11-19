@@ -8,6 +8,30 @@ claims below were re-checked against official OpenAI pages on 2026-11-19 (URLs i
 anything not confirmable is marked UNVERIFIED. OpenMail is **not** listed in any ChatGPT directory,
 and ChatGPT-native scheduling is not relied on (see [Briefs](#briefs-and-scheduling)).
 
+## Reference deployment (2026-11-20)
+
+A pre-release build runs at `https://mail-mcp.example.com/mcp` on the maintainer's VPS: unprivileged
+`openmail` system user, hardened systemd unit (`docs/deployment/REMOTE.md`), in-process TLS on
+`127.0.0.1:8765`, LiteSpeed reverse proxy with a Let's Encrypt certificate. Static-bearer mode is
+active (usable by Claude/Cursor/curl, **not** by ChatGPT). Verified from the public internet:
+valid TLS, `/healthz` 200, `/mcp` 401 without a token, MCP `initialize` OK with the token.
+The single configured account is a read-only placeholder until its password is set.
+
+**Remaining for ChatGPT**: an OAuth 2.1 authorization server (the one thing OpenMail does not ship), then switch the
+service from token mode to JWT mode:
+
+```bash
+# /etc/openmail/env: remove OPENMAIL_HTTP_AUTH_TOKEN_FILE, add (values from your IdP)
+OPENMAIL_HTTP_JWT_ISSUER=https://<idp>/
+OPENMAIL_HTTP_JWT_AUDIENCE=https://mail-mcp.example.com/mcp
+OPENMAIL_HTTP_JWT_JWKS_URL=https://<idp>/.well-known/jwks.json
+OPENMAIL_HTTP_JWT_SCOPE_ACCOUNTS='mail:read=main'
+systemctl restart openmail-mcp
+```
+
+Then add `https://mail-mcp.example.com/mcp` as a custom MCP server in ChatGPT (developer mode), choose OAuth, allowlist
+the redirect URI ChatGPT shows at the IdP, and run [TEST_CHECKLIST.md](TEST_CHECKLIST.md).
+
 ## What ChatGPT needs, and what OpenMail has
 
 | ChatGPT requirement (OpenAI docs, 2026-11-19) | OpenMail |
