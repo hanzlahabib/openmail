@@ -154,7 +154,7 @@ impl SendRequest {
             h.update(bytes);
         };
         field(b"openmail-smtp/content/v1");
-        let mut addr = |tag: &[u8], list: &[Address], field: &mut dyn FnMut(&[u8])| {
+        let addr = |tag: &[u8], list: &[Address], field: &mut dyn FnMut(&[u8])| {
             field(tag);
             field(&(list.len() as u64).to_be_bytes());
             for a in list {
