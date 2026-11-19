@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use axum::Router;
 use axum::http::{HeaderValue, header};
 use axum::routing::get;
@@ -57,6 +57,15 @@ pub const ENV_METRICS: &str = "OPENMAIL_HTTP_METRICS";
 /// Route of the opt-in metrics endpoint, relative to the authenticated MCP mount.
 pub const METRICS_ROUTE: &str = "/metrics";
 
+/// Built-in OAuth authorization server (single owner, no third-party identity provider):
+/// file holding the owner's Argon2id hash (made with `openmail-mcp oauth hash-password`).
+pub const ENV_OAUTH_HASH_FILE: &str = "OPENMAIL_OAUTH_OWNER_PASSWORD_HASH_FILE";
+/// Comma list of grantable scopes; default `mail:read` (read-only). Each scope maps to every
+/// configured account; account permissions in the config still apply on top.
+pub const ENV_OAUTH_SCOPES: &str = "OPENMAIL_OAUTH_SCOPES";
+/// Extra hosts clients may redirect to, beyond the built-in assistant hosts.
+pub const ENV_OAUTH_REDIRECT_HOSTS: &str = "OPENMAIL_OAUTH_REDIRECT_HOSTS";
+
 /// JWT validation settings (all four are required together).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JwtSettings {
@@ -79,6 +88,9 @@ pub struct HttpSecurity {
     pub allowed_origins: Vec<String>,
     /// Expose `METRICS_ROUTE` (authenticated). Off unless the operator asks.
     pub metrics_enabled: bool,
+    pub oauth_hash_file: Option<PathBuf>,
+    pub oauth_scopes: Vec<String>,
+    pub oauth_redirect_hosts: Vec<String>,
 }
 
 /// `mail:work=work,shared;mail:home=home` -> scope => account ids.
@@ -161,6 +173,9 @@ impl HttpSecurity {
             public_url: text(ENV_PUBLIC_URL),
             allowed_hosts: split_list(text(ENV_ALLOWED_HOSTS)),
             allowed_origins: split_list(text(ENV_ALLOWED_ORIGINS)),
+            oauth_hash_file: path(ENV_OAUTH_HASH_FILE),
+            oauth_scopes: split_list(text(ENV_OAUTH_SCOPES)),
+            oauth_redirect_hosts: split_list(text(ENV_OAUTH_REDIRECT_HOSTS)),
             metrics_enabled: text(ENV_METRICS)
                 .is_some_and(|v| matches!(v.trim(), "1" | "true" | "TRUE" | "True")),
         })
@@ -183,13 +198,19 @@ pub fn check_http_prerequisites(bind: &str, security: &HttpSecurity) -> Result<S
     if security.tls_cert.is_none() || security.tls_key.is_none() {
         bail!("refusing --transport http without TLS: set {ENV_TLS_CERT} and {ENV_TLS_KEY}");
     }
-    if security.auth_token_file.is_none() && security.jwt.is_none() {
-        bail!(
-            "refusing --transport http without authentication: set {ENV_AUTH_TOKEN_FILE} or the {ENV_JWT_ISSUER} family"
-        );
-    }
-    if security.auth_token_file.is_some() && security.jwt.is_some() {
-        bail!("configure exactly one of {ENV_AUTH_TOKEN_FILE} or JWT auth, not both");
+    let modes = [
+        security.auth_token_file.is_some(),
+        security.jwt.is_some(),
+        security.oauth_hash_file.is_some(),
+    ];
+    match modes.iter().filter(|m| **m).count() {
+        0 => bail!(
+            "refusing --transport http without authentication: set {ENV_AUTH_TOKEN_FILE}, the {ENV_JWT_ISSUER} family or {ENV_OAUTH_HASH_FILE}"
+        ),
+        1 => {}
+        _ => bail!(
+            "configure exactly one of {ENV_AUTH_TOKEN_FILE}, JWT auth or {ENV_OAUTH_HASH_FILE}, not several"
+        ),
     }
     Ok(addr)
 }
@@ -326,6 +347,103 @@ fn public_base(bind: SocketAddr, security: &HttpSecurity) -> Result<Url> {
     Ok(url)
 }
 
+/// JWKS served from memory: the built-in authorization server and the resource server share a
+/// process, so the validator never needs to fetch its own keys over the network.
+#[derive(Debug)]
+struct LocalJwks(Arc<openmail_authserver::AuthServer>);
+
+impl openmail_remote::auth::JwksFetcher for LocalJwks {
+    fn fetch(
+        &self,
+        _url: &Url,
+    ) -> impl Future<Output = Result<Vec<u8>, openmail_remote::auth::AuthError>> + Send {
+        let keys = self.0.jwks_json();
+        async move { Ok(keys) }
+    }
+}
+
+type OauthWiring = (
+    Arc<AuthState>,
+    ProtectedResourceMetadata,
+    Option<axum::Router>,
+);
+
+/// Single-owner OAuth 2.1 authorization server inside this process (no paid or third-party
+/// identity provider): serves discovery, registration, authorize and token endpoints beside
+/// `/mcp` and validates the tokens it issued.
+fn build_builtin_oauth(
+    config: &Config,
+    security: &HttpSecurity,
+    base: &Url,
+    briefs: &BriefsPaths,
+    hash_file: &Path,
+) -> Result<OauthWiring> {
+    let issuer = base.origin().ascii_serialization();
+    let resource = format!("{issuer}/mcp");
+    let scopes = if security.oauth_scopes.is_empty() {
+        vec!["mail:read".to_owned()]
+    } else {
+        security.oauth_scopes.clone()
+    };
+    let mut hosts: Vec<String> = openmail_authserver::DEFAULT_REDIRECT_HOSTS
+        .iter()
+        .map(|h| (*h).to_owned())
+        .collect();
+    hosts.extend(security.oauth_redirect_hosts.iter().cloned());
+    let state_dir = briefs
+        .state_dir
+        .as_ref()
+        .context("built-in OAuth needs a state directory; set OPENMAIL_STATE_DIR")?;
+    let server = openmail_authserver::AuthServer::open(openmail_authserver::Config {
+        issuer: issuer.clone(),
+        resource: resource.clone(),
+        owner_password_hash: read_token_file(hash_file)?,
+        state_dir: state_dir.join("oauth"),
+        scopes: scopes.clone(),
+        allowed_redirect_hosts: hosts,
+        access_ttl: openmail_authserver::DEFAULT_ACCESS_TTL,
+        refresh_ttl: openmail_authserver::DEFAULT_REFRESH_TTL,
+    })
+    .map_err(|e| anyhow!("built-in OAuth: {e}"))?;
+
+    let all_accounts: Vec<String> = config.accounts.iter().map(|a| a.id.to_string()).collect();
+    let scope_accounts: BTreeMap<String, Vec<String>> = scopes
+        .iter()
+        .map(|s| (s.clone(), all_accounts.clone()))
+        .collect();
+    // The JWKS URL is never fetched (keys come from memory), so the public-host rule that
+    // protects real fetches must not reject a loopback or LAN deployment: build with a
+    // placeholder, then set the real values.
+    let mut jwt = JwtConfig::new(
+        "https://example.com",
+        "https://example.com/mcp",
+        "https://example.com/jwks.json",
+        scope_accounts,
+    )
+    .context("invalid built-in OAuth settings")?;
+    jwt.issuer = issuer.clone();
+    jwt.audience = resource.clone();
+    jwt.jwks_url = Url::parse(&format!("{issuer}/jwks.json")).context("building JWKS URL")?;
+    let authenticator: Arc<dyn openmail_remote::auth::TokenAuthenticator> = Arc::new(
+        Authenticator::Jwt(JwtValidator::new(jwt, LocalJwks(Arc::clone(&server)))),
+    );
+    let scope_refs: Vec<&str> = scopes.iter().map(String::as_str).collect();
+    let metadata = ProtectedResourceMetadata::new(&resource, &issuer, &scope_refs);
+    let metadata_url = base
+        .join(RESOURCE_METADATA_PATH)
+        .context("building protected-resource metadata URL")?
+        .to_string();
+    tracing::info!(%issuer, "built-in OAuth authorization server enabled");
+    Ok((
+        Arc::new(AuthState {
+            authenticator,
+            resource_metadata_url: metadata_url,
+        }),
+        metadata,
+        Some(openmail_authserver::router(server)),
+    ))
+}
+
 fn build_auth(
     config: &Config,
     security: &HttpSecurity,
@@ -427,7 +545,13 @@ async fn serve_https(
     };
     let tls = server_config_from_files(cert, key).context("loading TLS material")?;
     let base = public_base(bind, security)?;
-    let (auth, metadata) = build_auth(config, security, &base)?;
+    let (auth, metadata, public_routes) = match &security.oauth_hash_file {
+        Some(hash_file) => build_builtin_oauth(config, security, &base, briefs, hash_file)?,
+        None => {
+            let (auth, metadata) = build_auth(config, security, &base)?;
+            (auth, metadata, None)
+        }
+    };
 
     let secrets = Arc::new(EnvKeyringSecretSource::new());
     let backend = ImapBackend::new(config.accounts.clone(), config.limits.clone(), secrets)?;
@@ -459,6 +583,7 @@ async fn serve_https(
 
     let mut http = HttpConfig::new(bind);
     http.auth = Some(auth);
+    http.public_routes = public_routes;
     http.resource_metadata = Some(metadata);
     http.allowed_origins = security.allowed_origins.clone();
 
@@ -735,6 +860,174 @@ imap = { host = "127.0.0.1", port = 1, tls = "implicit" }
         assert_eq!(post(None).send().await?.status(), 401);
         assert_eq!(post(Some("wrong")).send().await?.status(), 401);
         let ok = post(Some("t37-static-token")).send().await?;
+        assert_eq!(ok.status(), 200);
+        assert!(ok.headers().contains_key("mcp-session-id"));
+
+        let _ = stop.send(());
+        tokio::time::timeout(std::time::Duration::from_secs(15), server).await???;
+        Ok(())
+    }
+
+    /// Built-in OAuth over real HTTPS: dynamic registration, owner consent, PKCE token exchange,
+    /// then the issued JWT opens `/mcp` while anything else stays 401.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn builtin_oauth_issues_tokens_that_open_mcp() -> Result<()> {
+        use base64::Engine as _;
+        use sha2::{Digest, Sha256};
+        use std::os::unix::fs::PermissionsExt;
+
+        const PASSWORD: &str = "a long owner password 123";
+        const REDIRECT: &str = "https://chatgpt.com/connector_platform_oauth_redirect";
+        let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+        let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(Sha256::digest(verifier.as_bytes()));
+
+        let dir = tempfile::tempdir()?;
+        let cert = rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_owned()])?;
+        let cert_pem = cert.cert.pem();
+        let (cert_path, key_path, hash_path) = (
+            dir.path().join("cert.pem"),
+            dir.path().join("key.pem"),
+            dir.path().join("owner.hash"),
+        );
+        std::fs::write(&cert_path, &cert_pem)?;
+        std::fs::write(&key_path, cert.signing_key.serialize_pem())?;
+        std::fs::write(&hash_path, openmail_authserver::hash_password(PASSWORD)?)?;
+        std::fs::set_permissions(&hash_path, std::fs::Permissions::from_mode(0o600))?;
+
+        let port = std::net::TcpListener::bind("127.0.0.1:0")?
+            .local_addr()?
+            .port();
+        let bind: SocketAddr = format!("127.0.0.1:{port}").parse()?;
+        let public = format!("https://127.0.0.1:{port}");
+        let security = HttpSecurity {
+            tls_cert: Some(cert_path),
+            tls_key: Some(key_path),
+            oauth_hash_file: Some(hash_path),
+            public_url: Some(public.clone()),
+            ..HttpSecurity::default()
+        };
+        check_http_prerequisites(&bind.to_string(), &security)?;
+        let config = Config::from_toml(HTTP_CONFIG)?;
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let briefs = BriefsPaths {
+            config: dir.path().join("config.toml"),
+            state_dir: Some(dir.path().join("state")),
+        };
+        let server = tokio::spawn(async move {
+            serve_https(&config, &briefs, bind, &security, async {
+                let _ = stopped.await;
+            })
+            .await
+        });
+        let client = reqwest::Client::builder()
+            .add_root_certificate(reqwest::Certificate::from_pem(cert_pem.as_bytes())?)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()?;
+        let url = |p: &str| format!("{public}{p}");
+        let mut up = false;
+        for _ in 0..100 {
+            if client.get(url("/healthz")).send().await.is_ok() {
+                up = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        if !up {
+            let why = if server.is_finished() {
+                format!("{:?}", server.await)
+            } else {
+                "still starting".to_owned()
+            };
+            panic!("server did not come up: {why}");
+        }
+
+        // Discovery: the protected-resource document points at this server as its issuer.
+        let prm: serde_json::Value = client
+            .get(url("/.well-known/oauth-protected-resource"))
+            .send()
+            .await?
+            .json()
+            .await?;
+        assert_eq!(prm["authorization_servers"][0], public);
+        let meta: serde_json::Value = client
+            .get(url("/.well-known/oauth-authorization-server"))
+            .send()
+            .await?
+            .json()
+            .await?;
+        assert_eq!(meta["registration_endpoint"], url("/register"));
+
+        let reg: serde_json::Value = client
+            .post(url("/register"))
+            .json(&serde_json::json!({"client_name": "ChatGPT", "redirect_uris": [REDIRECT]}))
+            .send()
+            .await?
+            .json()
+            .await?;
+        let cid = reg["client_id"].as_str().context("client_id")?.to_owned();
+        let enc = |s: &str| url::form_urlencoded::byte_serialize(s.as_bytes()).collect::<String>();
+        let page = client
+            .get(url(&format!(
+                "/authorize?response_type=code&client_id={cid}&redirect_uri={}&code_challenge={challenge}&code_challenge_method=S256&state=s1&resource={}",
+                enc(REDIRECT),
+                enc(&format!("{public}/mcp"))
+            )))
+            .send()
+            .await?
+            .text()
+            .await?;
+        let marker = "name=\"tx\" value=\"";
+        let start = page.find(marker).context("consent page has no tx")? + marker.len();
+        let tx = &page[start..start + page[start..].find('"').context("tx end")?];
+        let approved = client
+            .post(url("/authorize"))
+            .form(&[("tx", tx), ("decision", "allow"), ("password", PASSWORD)])
+            .send()
+            .await?;
+        assert_eq!(approved.status(), 302);
+        let loc = Url::parse(approved.headers()["location"].to_str()?)?;
+        let code = loc
+            .query_pairs()
+            .find(|(k, _)| k == "code")
+            .context("no code")?
+            .1
+            .into_owned();
+        let tok: serde_json::Value = client
+            .post(url("/token"))
+            .form(&[
+                ("grant_type", "authorization_code"),
+                ("client_id", cid.as_str()),
+                ("code", code.as_str()),
+                ("redirect_uri", REDIRECT),
+                ("code_verifier", verifier),
+            ])
+            .send()
+            .await?
+            .json()
+            .await?;
+        let access = tok["access_token"].as_str().context("access_token")?;
+
+        let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}"#;
+        let post = |token: Option<&str>| {
+            let mut r = client
+                .post(url("/mcp"))
+                .header("content-type", "application/json")
+                .header("accept", "application/json, text/event-stream")
+                .body(init);
+            if let Some(t) = token {
+                r = r.bearer_auth(t);
+            }
+            r
+        };
+        assert_eq!(post(None).send().await?.status(), 401);
+        assert_eq!(post(Some("not-a-jwt")).send().await?.status(), 401);
+        let mut forged = access.to_owned();
+        forged.pop();
+        forged.push(if access.ends_with('A') { 'B' } else { 'A' });
+        assert_eq!(post(Some(&forged)).send().await?.status(), 401);
+        let ok = post(Some(access)).send().await?;
         assert_eq!(ok.status(), 200);
         assert!(ok.headers().contains_key("mcp-session-id"));
 

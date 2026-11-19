@@ -33,6 +33,34 @@ Terminating TLS at the proxy and speaking plain HTTP to the upstream is **not** 
 
 Keep `--bind` on `127.0.0.1` when a proxy fronts it; bind a public interface only without a proxy.
 
+## Built-in OAuth authorization server (no third-party IdP)
+
+ChatGPT and Claude connectors only speak OAuth. `serve --transport http` can be its own single-owner
+authorization server, free and self-hosted (crate `openmail-authserver`): authorization code + PKCE (S256, mandatory),
+public clients only, RFC 7591 dynamic client registration restricted to allowlisted redirect hosts
+(`chatgpt.com`, `chat.openai.com`, `platform.openai.com`, `claude.ai`, `claude.com`, loopback; add more with
+`OPENMAIL_OAUTH_REDIRECT_HOSTS`), RFC 8414 metadata, RFC 8707 `resource`, RFC 9207 `iss`, ES256 JWT access tokens
+(1 h) and rotating refresh tokens (30 d). The owner signs in on the consent page with a password (Argon2id hash);
+5 wrong attempts pause sign-in for 5 minutes.
+
+```sh
+read -rs P; printf %s "$P" | openmail-mcp oauth hash-password > /etc/openmail/owner.hash   # >= 12 characters
+chmod 600 /etc/openmail/owner.hash
+```
+
+| Env var | Meaning |
+|---|---|
+| `OPENMAIL_OAUTH_OWNER_PASSWORD_HASH_FILE` | enables the built-in server (instead of the token file or external JWT); file must be mode 600 |
+| `OPENMAIL_HTTP_PUBLIC_URL` | required: the public https origin; becomes the issuer, resource is `<origin>/mcp` |
+| `OPENMAIL_OAUTH_SCOPES` | grantable scopes, default `mail:read` (read-only); each maps to every configured account |
+| `OPENMAIL_OAUTH_REDIRECT_HOSTS` | extra redirect hosts |
+| `OPENMAIL_STATE_DIR` | where `oauth/` (signing key, registered clients, hashed refresh tokens) lives |
+
+The proxy must pass these paths to the service unauthenticated: `/.well-known/oauth-protected-resource`,
+`/.well-known/oauth-authorization-server`, `/authorize`, `/token`, `/register`, `/jwks.json`, plus `/mcp`.
+Limits: one owner, no consent memory (each new connection asks again), no token revocation endpoint (delete
+`oauth/oauth.db` to revoke everything, change the password hash to stop new sign-ins).
+
 ## Token
 
 ```sh
