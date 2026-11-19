@@ -1,0 +1,8 @@
+# Wave 4 rules — finishing the product on branch `integration` (tree: /home/USER/development/openmail)
+Read docs/RELEASE_READINESS.md (what is missing), docs/SECURITY_REVIEW.md, docs/ARCHITECTURE.md, crates/openmail-core/src/{backend,model,config}.rs (frozen contracts, newly added: MailDrafts, AttachmentSource, SentFolder, DraftInput, AttachmentData).
+- Agents share ONE tree. Edit ONLY your Owns paths. Never `git add -A/.`, `git stash/checkout/reset/clean/rebase`. Commit only your paths, small and often: `git add <paths> && git commit -m "<msg>" -- <paths>` (retry on index.lock). No AI attribution in messages. Never push/publish.
+- Workspace Cargo.toml: do not edit. Add deps in your crate's Cargo.toml (explicit versions, `cargo info` first). Cargo.lock: leave it; the orchestrator regenerates.
+- Build: `export CARGO_TARGET_DIR=/home/USER/development/openmail-worktrees/targets/<id> CARGO_BUILD_JOBS=3`; always `-p <crate>`. If another agent's in-flight change breaks your build, wait 2 min and retry; report if it persists.
+- Done = `cargo fmt`, `cargo clippy -p <crate> --all-targets -- -D warnings`, `cargo test -p <crate>` green; GreenMail tests with OPENMAIL_REQUIRE_DOCKER=1. Real assertions that would FAIL without the feature. No mock production code, no println in libs, no unwrap/expect outside tests, no secrets in logs/Debug.
+- Cross-agent interfaces are in your task text. If you need something another agent owns, check `git log` for it every few minutes; do not edit their files. If still absent after ~15 min, implement against the documented trait with a test double and report the gap.
+- Report honestly what is NOT done. Last line: `WAVE4-DONE <id>`.

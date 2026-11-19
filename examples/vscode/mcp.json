@@ -1,0 +1,9 @@
+{
+  "servers": {
+    "openmail": {
+      "type": "stdio",
+      "command": "openmail-mcp",
+      "args": ["serve", "--config", "/home/YOU/.config/openmail-mcp/config.toml"]
+    }
+  }
+}

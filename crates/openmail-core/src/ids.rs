@@ -17,11 +17,15 @@ impl AccountId {
         let s = s.into();
         let ok = !s.is_empty()
             && s.len() <= 64
-            && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_');
+            && s.bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_');
         if ok {
             Ok(Self(s))
         } else {
-            Err(Error::new(ErrorCode::ConfigInvalid, "account id must be 1-64 chars of [a-z0-9_-]"))
+            Err(Error::new(
+                ErrorCode::ConfigInvalid,
+                "account id must be 1-64 chars of [a-z0-9_-]",
+            ))
         }
     }
     pub fn as_str(&self) -> &str {
@@ -57,7 +61,10 @@ pub struct MessageRef {
 
 impl MessageRef {
     pub fn encode(&self) -> String {
-        let raw = format!("v1\0{}\0{}\0{}\0{}", self.account, self.folder, self.uid_validity, self.uid);
+        let raw = format!(
+            "v1\0{}\0{}\0{}\0{}",
+            self.account, self.folder, self.uid_validity, self.uid
+        );
         URL_SAFE_NO_PAD.encode(raw)
     }
 
@@ -66,7 +73,9 @@ impl MessageRef {
         let bytes = URL_SAFE_NO_PAD.decode(s).map_err(|_| bad())?;
         let text = String::from_utf8(bytes).map_err(|_| bad())?;
         let parts: Vec<&str> = text.split('\0').collect();
-        let [version, account, folder, validity, uid] = parts[..] else { return Err(bad()) };
+        let [version, account, folder, validity, uid] = parts[..] else {
+            return Err(bad());
+        };
         if version != "v1" || folder.is_empty() {
             return Err(bad());
         }
@@ -96,7 +105,12 @@ mod tests {
     use super::*;
 
     fn sample() -> MessageRef {
-        MessageRef { account: AccountId::new("work-1").unwrap(), folder: "INBOX/Sub é".into(), uid_validity: 42, uid: 7 }
+        MessageRef {
+            account: AccountId::new("work-1").unwrap(),
+            folder: "INBOX/Sub é".into(),
+            uid_validity: 42,
+            uid: 7,
+        }
     }
 
     #[test]
@@ -108,9 +122,9 @@ mod tests {
     #[test]
     fn rejects_garbage_and_wrong_version() {
         assert!(MessageRef::decode("!!!").is_err());
-        let v2 = URL_SAFE_NO_PAD.encode("v2\0a\0INBOX\01\01");
+        let v2 = URL_SAFE_NO_PAD.encode("v2\x00a\x00INBOX\x001\x001");
         assert!(MessageRef::decode(&v2).is_err());
-        let short = URL_SAFE_NO_PAD.encode("v1\0a\0INBOX\01");
+        let short = URL_SAFE_NO_PAD.encode("v1\x00a\x00INBOX\x001");
         assert!(MessageRef::decode(&short).is_err());
     }
 

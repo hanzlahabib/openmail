@@ -1,0 +1,7 @@
+Subject: broken
+Content-Type: multipart/mixed; boundary="nope"
+
+--nope
+Content-Type: text/plain
+
+still readable text with no closing boundaryÿþ

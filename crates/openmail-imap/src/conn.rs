@@ -1,0 +1,178 @@
+//! Opening and authenticating one IMAP session (implicit TLS or STARTTLS).
+use std::io;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+use std::time::Duration;
+
+use async_imap::imap_proto::{Response, Status};
+use async_imap::{Authenticator, Client, Session};
+use openmail_core::config::{AccountConfig, AuthMethod, ServerEndpoint, TlsMode};
+use secrecy::{ExposeSecret, SecretString};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::net::TcpStream;
+use tokio::time::timeout;
+use tokio_rustls::TlsConnector;
+use tokio_rustls::client::TlsStream;
+use tokio_rustls::rustls::pki_types::ServerName;
+
+use crate::error::{ImapError, ImapResult};
+
+/// The only transport that ever carries an authenticated session: TLS over TCP. A
+/// concrete type (not `Box<dyn ...>`) keeps pooled futures `Send` for the compiler.
+#[derive(Debug)]
+pub struct TlsTransport(TlsStream<TcpStream>);
+
+impl AsyncRead for TlsTransport {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.0).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for TlsTransport {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.0).poll_write(cx, buf)
+    }
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.0).poll_flush(cx)
+    }
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.0).poll_shutdown(cx)
+    }
+}
+
+pub type ImapSession = Session<TlsTransport>;
+
+/// The SASL XOAUTH2 initial response embeds the bearer token, so it is held as a
+/// `SecretString` (zeroized on drop, redacted in Debug) until the single moment it is
+/// handed to the wire layer.
+struct XOAuth2 {
+    payload: SecretString,
+    sent: bool,
+}
+
+impl Authenticator for XOAuth2 {
+    type Response = String;
+    fn process(&mut self, _challenge: &[u8]) -> String {
+        // Second round is the server's JSON error challenge; an empty reply ends it.
+        if std::mem::replace(&mut self.sent, true) {
+            String::new()
+        } else {
+            self.payload.expose_secret().to_owned()
+        }
+    }
+}
+
+async fn tcp(ep: &ServerEndpoint, limit: Duration) -> ImapResult<TcpStream> {
+    // A black-holed host would otherwise wait for the OS TCP timeout (minutes).
+    let s = timeout(limit, TcpStream::connect((ep.host.as_str(), ep.port)))
+        .await
+        .map_err(|_| ImapError::Timeout)?
+        .map_err(|e| {
+            ImapError::Connection(format!(
+                "cannot reach {}:{}: {}",
+                ep.host,
+                ep.port,
+                e.kind()
+            ))
+        })?;
+    // Interactive request/response protocol: avoid Nagle delays.
+    s.set_nodelay(true).map_err(|e| ImapError::io(&e))?;
+    Ok(s)
+}
+
+async fn handshake(
+    stream: TcpStream,
+    tls: &TlsConnector,
+    ep: &ServerEndpoint,
+) -> ImapResult<TlsTransport> {
+    let name = ServerName::try_from(ep.host.clone())
+        .map_err(|_| ImapError::Connection("invalid server host name".into()))?;
+    let s = tls
+        .connect(name, stream)
+        .await
+        .map_err(|e| ImapError::Connection(format!("TLS handshake failed: {e}")))?;
+    Ok(TlsTransport(s))
+}
+
+async fn expect_greeting<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug>(
+    client: &mut Client<T>,
+) -> ImapResult<()> {
+    let greeting = client
+        .read_response()
+        .await
+        .map_err(|e| ImapError::io(&e))?;
+    let Some(greeting) = greeting else {
+        return Err(ImapError::Connection("server closed the connection".into()));
+    };
+    match greeting.parsed() {
+        Response::Data {
+            status: Status::Ok | Status::PreAuth,
+            ..
+        } => Ok(()),
+        _ => Err(ImapError::Connection(
+            "server refused the connection".into(),
+        )),
+    }
+}
+
+/// Connects, secures the channel and authenticates. Auth rejection -> `ImapError::Auth`.
+pub async fn open(
+    cfg: &AccountConfig,
+    secret: &SecretString,
+    tls: &TlsConnector,
+) -> ImapResult<ImapSession> {
+    let ep = &cfg.imap;
+    let limit = cfg.timeout();
+    let client: Client<TlsTransport> = match ep.tls {
+        TlsMode::Implicit => {
+            let mut c = Client::new(handshake(tcp(ep, limit).await?, tls, ep).await?);
+            expect_greeting(&mut c).await?;
+            c
+        }
+        TlsMode::StartTls => {
+            let mut plain = Client::new(tcp(ep, limit).await?);
+            expect_greeting(&mut plain).await?;
+            plain
+                .run_command_and_check_ok("STARTTLS", None)
+                .await
+                .map_err(|_| {
+                    ImapError::Connection(
+                        "server refused STARTTLS; refusing to continue unencrypted".into(),
+                    )
+                })?;
+            // No new greeting follows a successful STARTTLS upgrade.
+            Client::new(handshake(plain.into_inner(), tls, ep).await?)
+        }
+    };
+    let user = cfg.login_name();
+    let result = match cfg.auth {
+        AuthMethod::Password => client.login(user, secret.expose_secret()).await,
+        AuthMethod::Oauth2 => {
+            let payload = SecretString::from(format!(
+                "user={user}\x01auth=Bearer {}\x01\x01",
+                secret.expose_secret()
+            ));
+            client
+                .authenticate(
+                    "XOAUTH2",
+                    XOAuth2 {
+                        payload,
+                        sent: false,
+                    },
+                )
+                .await
+        }
+    };
+    result.map_err(|(e, _)| match e {
+        async_imap::error::Error::No(_) | async_imap::error::Error::Bad(_) => ImapError::Auth,
+        other => other.into(),
+    })
+}

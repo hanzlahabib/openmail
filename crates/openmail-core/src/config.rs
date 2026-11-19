@@ -125,7 +125,11 @@ pub struct Limits {
 }
 impl Default for Limits {
     fn default() -> Self {
-        Self { max_global_connections: DEFAULT_MAX_GLOBAL_CONNECTIONS, max_body_bytes: DEFAULT_MAX_BODY_BYTES, max_page_size: 50 }
+        Self {
+            max_global_connections: DEFAULT_MAX_GLOBAL_CONNECTIONS,
+            max_body_bytes: DEFAULT_MAX_BODY_BYTES,
+            max_page_size: 50,
+        }
     }
 }
 
@@ -141,25 +145,33 @@ pub struct Config {
 
 impl Config {
     pub fn from_toml(text: &str) -> Result<Self> {
-        let cfg: Self = toml::from_str(text).map_err(|e| Error::new(ErrorCode::ConfigInvalid, e.message().to_owned()))?;
+        let cfg: Self = toml::from_str(text)
+            .map_err(|e| Error::new(ErrorCode::ConfigInvalid, e.message().to_owned()))?;
         cfg.validate()?;
         Ok(cfg)
     }
 
     pub fn account(&self, id: &AccountId) -> Result<&AccountConfig> {
-        self.accounts
-            .iter()
-            .find(|a| &a.id == id)
-            .ok_or_else(|| Error::new(ErrorCode::AccountNotFound, format!("unknown account '{id}'")))
+        self.accounts.iter().find(|a| &a.id == id).ok_or_else(|| {
+            Error::new(
+                ErrorCode::AccountNotFound,
+                format!("unknown account '{id}'"),
+            )
+        })
     }
 
     pub fn validate(&self) -> Result<()> {
         let bad = |m: String| Err(Error::new(ErrorCode::ConfigInvalid, m));
         if self.version > CONFIG_VERSION {
-            return bad(format!("config version {} is newer than supported {CONFIG_VERSION}", self.version));
+            return bad(format!(
+                "config version {} is newer than supported {CONFIG_VERSION}",
+                self.version
+            ));
         }
         if self.accounts.len() > MAX_CONFIGURED_ACCOUNTS {
-            return bad(format!("more than {MAX_CONFIGURED_ACCOUNTS} accounts configured"));
+            return bad(format!(
+                "more than {MAX_CONFIGURED_ACCOUNTS} accounts configured"
+            ));
         }
         let mut seen = BTreeSet::new();
         for a in &self.accounts {
@@ -183,11 +195,22 @@ impl Config {
             if a.timeout_secs == 0 || a.timeout_secs > 300 {
                 return bad(format!("account '{}': timeout_secs must be 1-300", a.id));
             }
-            if a.read_only && (a.permissions.organize || a.permissions.drafts || a.permissions.send || a.permissions.delete) {
-                return bad(format!("account '{}': read_only = true conflicts with write permissions", a.id));
+            if a.read_only
+                && (a.permissions.organize
+                    || a.permissions.drafts
+                    || a.permissions.send
+                    || a.permissions.delete)
+            {
+                return bad(format!(
+                    "account '{}': read_only = true conflicts with write permissions",
+                    a.id
+                ));
             }
             if a.permissions.send && a.smtp.is_none() {
-                return bad(format!("account '{}': send permission requires an [account.smtp] section", a.id));
+                return bad(format!(
+                    "account '{}': send permission requires an [account.smtp] section",
+                    a.id
+                ));
             }
         }
         Ok(())
@@ -220,13 +243,22 @@ imap = { host = "imap.example.com", port = 993, tls = "implicit" }
 
     #[test]
     fn unknown_keys_rejected() {
-        let t = GOOD.replace("auth = \"password\"", "auth = \"password\"\nread_onyl = false");
-        assert_eq!(Config::from_toml(&t).unwrap_err().code(), ErrorCode::ConfigInvalid);
+        let t = GOOD.replace(
+            "auth = \"password\"",
+            "auth = \"password\"\nread_onyl = false",
+        );
+        assert_eq!(
+            Config::from_toml(&t).unwrap_err().code(),
+            ErrorCode::ConfigInvalid
+        );
     }
 
     #[test]
     fn inline_password_field_rejected() {
-        let t = GOOD.replace("auth = \"password\"", "auth = \"password\"\npassword = \"hunter2\"");
+        let t = GOOD.replace(
+            "auth = \"password\"",
+            "auth = \"password\"\npassword = \"hunter2\"",
+        );
         assert!(Config::from_toml(&t).is_err());
     }
 
