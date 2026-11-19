@@ -29,6 +29,10 @@ secrecy = "0.10"
 base64 = "0.22"
 sha2 = "0.10"
 time = { version = "0.3", features = ["serde", "formatting", "parsing"] }
+getrandom = "0.4"
+keyring = "4"
+rusqlite = { version = "0.43", features = ["bundled"] }
+subtle = "2"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
