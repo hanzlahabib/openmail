@@ -13,7 +13,7 @@ use crate::server::OpenMailServer;
 #[derive(Debug, thiserror::Error)]
 pub enum ServeError {
     #[error("MCP initialization failed: {0}")]
-    Initialize(#[from] ServerInitializeError),
+    Initialize(#[from] Box<ServerInitializeError>),
     #[error("MCP service task failed: {0}")]
     Join(#[from] tokio::task::JoinError),
 }
@@ -26,7 +26,7 @@ where
     R: AsyncRead + Send + Unpin + 'static,
     W: AsyncWrite + Send + Unpin + 'static,
 {
-    let running = server.serve((reader, writer)).await?;
+    let running = server.serve((reader, writer)).await.map_err(Box::new)?;
     let cancel = running.cancellation_token();
     let waiting = running.waiting();
     tokio::pin!(waiting);

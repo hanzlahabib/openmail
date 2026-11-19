@@ -1,5 +1,6 @@
 //! openmail-mcp: rmcp server exposing read/search mail tools over any `MailBackend`.
 //! Mailbox text is untrusted: see [`untrusted`] and the per-tool descriptions.
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 mod backend_bound;
 mod error;
 mod input;
