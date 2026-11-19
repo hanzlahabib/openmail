@@ -5,8 +5,13 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
+use std::sync::Arc;
+
 use anyhow::{Context, Result, bail};
 use openmail_core::config::Config;
+use openmail_imap::ImapBackend;
+use openmail_mcp::{build_server, serve_stdio};
+use openmail_security::EnvKeyringSecretSource;
 
 use crate::cli::{ServeArgs, Transport};
 
@@ -93,7 +98,7 @@ pub async fn shutdown_signal() -> Result<()> {
 }
 
 pub fn run(args: ServeArgs) -> Result<()> {
-    run_with(args, &HttpSecurity::from_env(), &UnwiredBackend)
+    run_with(args, &HttpSecurity::from_env(), &LiveBackend)
 }
 
 fn run_with(args: ServeArgs, security: &HttpSecurity, backend: &dyn ServeBackend) -> Result<()> {
@@ -112,18 +117,30 @@ fn run_with(args: ServeArgs, security: &HttpSecurity, backend: &dyn ServeBackend
     }
 }
 
-/// Used until the server crates expose their entry points; fails loudly
-/// instead of pretending to serve.
-struct UnwiredBackend;
+/// Production wiring: real IMAP backend + OS/env secrets behind the MCP server.
+struct LiveBackend;
 
-impl ServeBackend for UnwiredBackend {
-    fn serve_stdio(&self, _: &Config) -> Result<()> {
-        bail!(
-            "stdio server is not wired yet: openmail-mcp `serve_stdio` is not linked into the CLI"
-        )
+impl ServeBackend for LiveBackend {
+    fn serve_stdio(&self, config: &Config) -> Result<()> {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .context("starting async runtime")?;
+        let secrets = Arc::new(EnvKeyringSecretSource::new());
+        let backend = ImapBackend::new(config.accounts.clone(), config.limits.clone(), secrets)?;
+        let server = build_server(Arc::new(config.clone()), backend);
+        // stdout is the JSON-RPC channel; the library never prints to it.
+        runtime
+            .block_on(serve_stdio(server))
+            .context("serving MCP over stdio")
     }
+
     fn serve_http(&self, _: &Config, _: SocketAddr, _: &HttpSecurity) -> Result<()> {
-        bail!("http server is not wired yet: openmail-remote is not linked into the CLI")
+        // The hardened edge exists in openmail-remote but is not yet bridged to the MCP
+        // service. Refusing is safer than serving without that bridge.
+        bail!(
+            "http transport is not wired yet: openmail-remote is not connected to the MCP service"
+        )
     }
 }
 
