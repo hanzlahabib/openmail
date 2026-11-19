@@ -1,0 +1,12 @@
+{
+  "servers": {
+    "openmail-remote": {
+      "type": "http",
+      "url": "https://mail-mcp.example.com/mcp",
+      "headers": { "Authorization": "Bearer ${input:openmail-token}" }
+    }
+  },
+  "inputs": [
+    { "id": "openmail-token", "type": "promptString", "description": "OpenMail access token (OAuth JWT)", "password": true }
+  ]
+}

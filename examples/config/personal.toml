@@ -1,0 +1,14 @@
+# One personal mailbox, read-only (the default). Fake host and credentials.
+version = 1
+
+[[account]]
+id = "personal"
+display_name = "Personal"
+email = "me@example.com"
+auth = "password"
+credential = { kind = "env", var = "OPENMAIL_PERSONAL_PASSWORD" }
+
+[account.imap]
+host = "imap.example.com"
+port = 993
+tls = "implicit"
