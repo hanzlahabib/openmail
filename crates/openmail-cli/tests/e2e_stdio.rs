@@ -470,6 +470,10 @@ async fn two_accounts_are_isolated_and_bad_credentials_fail_safely() {
     );
     let report = c.call_tool("mail_test_connection", json!({"account":"mallory"}));
     assert_eq!(report.payload["imap_ok"], false, "{report:?}");
+    assert_eq!(
+        report.payload["detail"],
+        "IMAP authentication failed; check the mailbox credential and login settings"
+    );
     let still = c.call_tool("mail_list_folders", json!({"account":"bob"}));
     assert!(!still.is_error, "{still:?}");
 

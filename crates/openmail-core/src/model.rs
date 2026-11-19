@@ -116,6 +116,8 @@ pub struct Page<T> {
 pub struct ConnectionReport {
     pub account: AccountId,
     pub imap_ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub imap_error_code: Option<crate::ErrorCode>,
     pub smtp_ok: Option<bool>,
     pub capabilities: Vec<String>,
     /// Sanitized, actionable diagnostic; never contains credentials.

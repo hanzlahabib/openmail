@@ -112,6 +112,54 @@ pub enum AccountsAction {
         /// Account id; all accounts when omitted.
         account: Option<String>,
     },
+    /// Add a mailbox (stored in accounts.d/ beside the config; the password goes into a
+    /// private secret file, never into the config or the command line).
+    Add(AccountAddArgs),
+    /// Remove a mailbox that `accounts add` created. Only OpenMail's configuration and its
+    /// secret file are deleted: the mailbox and its messages on the mail server are untouched.
+    Remove {
+        /// Account id.
+        id: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum TlsChoice {
+    Implicit,
+    StartTls,
+}
+
+#[derive(Debug, Args)]
+pub struct AccountAddArgs {
+    /// Short id (a-z, 0-9, - and _).
+    pub id: String,
+    /// Mailbox address.
+    #[arg(long)]
+    pub email: String,
+    #[arg(long)]
+    pub imap_host: String,
+    #[arg(long, default_value_t = 993)]
+    pub imap_port: u16,
+    #[arg(long, value_enum, default_value_t = TlsChoice::Implicit)]
+    pub imap_tls: TlsChoice,
+    /// Login name when it differs from the address.
+    #[arg(long)]
+    pub username: Option<String>,
+    #[arg(long)]
+    pub smtp_host: Option<String>,
+    #[arg(long, default_value_t = 465)]
+    pub smtp_port: u16,
+    #[arg(long, value_enum, default_value_t = TlsChoice::Implicit)]
+    pub smtp_tls: TlsChoice,
+    /// Grant write permissions (default is read-only): organize, drafts, send, delete.
+    #[arg(long, value_delimiter = ',')]
+    pub allow: Vec<String>,
+    /// Read the password from stdin instead of prompting (for scripts and Docker).
+    #[arg(long)]
+    pub password_stdin: bool,
+    /// Replace an account created earlier by `accounts add` (rotates its password).
+    #[arg(long)]
+    pub replace: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

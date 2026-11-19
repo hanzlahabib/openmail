@@ -1,3 +1,4 @@
+mod account_store;
 mod accounts;
 mod approvals;
 mod brief_cmd;

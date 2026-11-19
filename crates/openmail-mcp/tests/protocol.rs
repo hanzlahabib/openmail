@@ -88,7 +88,7 @@ const TOOLS: [&str; 27] = [
     "mail_update_draft",
 ];
 
-/// Tools that change state; everything else must be annotated read-only.
+/// Tools that need mailbox write permissions.
 const WRITE_TOOLS: [&str; 11] = [
     "mail_archive_message",
     "mail_create_draft",
@@ -168,7 +168,7 @@ async fn tools_list_has_strict_schemas_and_read_only_annotations() {
             .annotations
             .as_ref()
             .unwrap_or_else(|| panic!("{} lacks annotations", t.name));
-        let writes = WRITE_TOOLS.contains(&&*t.name);
+        let writes = WRITE_TOOLS.contains(&&*t.name) || t.name == "brief_generate";
         assert_eq!(a.read_only_hint, Some(!writes), "{}", t.name);
         assert_eq!(
             a.destructive_hint,

@@ -153,6 +153,7 @@ impl MailBackend for FakeBackend {
         Ok(ConnectionReport {
             account: account.clone(),
             imap_ok: true,
+            imap_error_code: None,
             smtp_ok: None,
             capabilities: vec!["IMAP4rev1".into(), "UIDPLUS".into()],
             detail: Some("x".repeat(2000)),

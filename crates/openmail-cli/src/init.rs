@@ -223,6 +223,13 @@ pub fn render_account(a: &Answers) -> String {
                 toml_str(var)
             );
         }
+        CredentialRef::File { path } => {
+            let _ = writeln!(
+                s,
+                "credential = {{ kind = \"file\", path = {} }}",
+                toml_str(path)
+            );
+        }
         CredentialRef::Keyring { service, user } => {
             let _ = writeln!(
                 s,
@@ -376,6 +383,9 @@ pub fn credential_hint(a: &Answers) -> String {
             format!(
                 "Export {var} in the environment of the MCP client process (it is read at runtime, never stored in the config)."
             )
+        }
+        CredentialRef::File { path } => {
+            format!("Put only the password in {path} (mode 600).")
         }
         CredentialRef::Keyring { service, user } => {
             format!(

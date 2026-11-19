@@ -160,6 +160,8 @@ Global flags: `--config <PATH>` (env `OPENMAIL_CONFIG`; default `$XDG_CONFIG_HOM
 
 Exit codes: 0 success, 1 runtime failure, 2 usage error.
 
+Mailbox management on a server (`accounts add|remove`, `accounts.d/`, secret files, `failure` diagnostics): [docs/deployment/ACCOUNTS.md](docs/deployment/ACCOUNTS.md).
+
 ## Multi-account
 
 Many `[[account]]` entries (up to 500), each with its own credentials, permissions, folder map, connection cap

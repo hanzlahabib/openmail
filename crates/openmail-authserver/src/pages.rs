@@ -18,7 +18,7 @@ pub fn escape(s: &str) -> String {
 
 const STYLE: &str = "body{font:16px system-ui,sans-serif;max-width:28rem;margin:4rem auto;padding:0 1rem;color:#111}\
 input,button{font:inherit;padding:.5rem;margin:.25rem 0}input[type=password]{width:100%;box-sizing:border-box}\
-button{cursor:pointer}.deny{background:none;border:1px solid #888}.err{color:#b00020}code{background:#eee;padding:0 .2rem}ul.scopes{list-style:none;padding:0}ul.scopes li{margin:.4rem 0}";
+button{cursor:pointer}.deny{background:none;border:1px solid #888}.err{color:#b00020}code{background:#eee;padding:0 .2rem}.note{background:#f4f4f4;padding:.6rem;border-radius:.3rem;font-size:.9rem}ul.scopes{list-style:none;padding:0}ul.scopes li{margin:.4rem 0}";
 
 fn shell(title: &str, body: &str) -> String {
     format!(
@@ -69,6 +69,7 @@ pub fn consent(
             "<h1>Authorize access</h1><p><strong>{}</strong> wants to use your OpenMail server. Choose what it may do:</p>\
 <form method=\"post\" action=\"/authorize\"><input type=\"hidden\" name=\"tx\" value=\"{}\"><ul class=\"scopes\">{boxes}</ul>\
 <p>Only approve applications you started yourself. Sign in as the owner to continue.</p>{err}\
+<p class=\"note\"><strong>This is your OpenMail owner password</strong>, the one you set for this OpenMail server. It is not your email password and not your ChatGPT password. Mailbox passwords are configured on the server, never here.</p>\
 <label>Owner password<br><input type=\"password\" name=\"password\" autocomplete=\"current-password\" autofocus></label><br>\
 <button type=\"submit\" name=\"decision\" value=\"allow\">Approve selected</button> \
 <button type=\"submit\" name=\"decision\" value=\"allow_all\">Approve ALL permissions</button> \

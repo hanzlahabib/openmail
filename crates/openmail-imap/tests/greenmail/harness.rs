@@ -326,9 +326,10 @@ impl SecretSource for Secrets {
                 .get(var)
                 .map(|v| SecretString::from(v.clone()))
                 .ok_or_else(|| Error::new(ErrorCode::ConfigInvalid, "unknown test secret")),
-            CredentialRef::Keyring { .. } => {
-                Err(Error::new(ErrorCode::Unsupported, "no keyring in tests"))
-            }
+            CredentialRef::Keyring { .. } | CredentialRef::File { .. } => Err(Error::new(
+                ErrorCode::Unsupported,
+                "no keyring or files in tests",
+            )),
         }
     }
 }

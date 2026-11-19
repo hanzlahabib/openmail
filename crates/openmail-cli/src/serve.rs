@@ -253,7 +253,7 @@ fn run_with(args: ServeArgs, security: &HttpSecurity, backend: &dyn ServeBackend
     };
     let text = std::fs::read_to_string(&args.config)
         .with_context(|| format!("reading config {}", args.config.display()))?;
-    let config = Config::from_toml(&text)?;
+    let config = Config::from_toml(&text)?.with_dropins(&Config::dropin_dir(&args.config))?;
     config.validate()?;
     match http_addr {
         None => backend.serve_stdio(&config),
