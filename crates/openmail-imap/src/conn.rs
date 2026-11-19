@@ -2,6 +2,7 @@
 use std::io;
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use std::time::Duration;
 
 use async_imap::imap_proto::{Response, Status};
 use async_imap::{Authenticator, Client, Session};
@@ -9,6 +10,7 @@ use openmail_core::config::{AccountConfig, AuthMethod, ServerEndpoint, TlsMode};
 use secrecy::{ExposeSecret, SecretString};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
+use tokio::time::timeout;
 use tokio_rustls::TlsConnector;
 use tokio_rustls::client::TlsStream;
 use tokio_rustls::rustls::pki_types::ServerName;
@@ -48,8 +50,11 @@ impl AsyncWrite for TlsTransport {
 
 pub type ImapSession = Session<TlsTransport>;
 
+/// The SASL XOAUTH2 initial response embeds the bearer token, so it is held as a
+/// `SecretString` (zeroized on drop, redacted in Debug) until the single moment it is
+/// handed to the wire layer.
 struct XOAuth2 {
-    payload: String,
+    payload: SecretString,
     sent: bool,
 }
 
@@ -60,14 +65,16 @@ impl Authenticator for XOAuth2 {
         if std::mem::replace(&mut self.sent, true) {
             String::new()
         } else {
-            self.payload.clone()
+            self.payload.expose_secret().to_owned()
         }
     }
 }
 
-async fn tcp(ep: &ServerEndpoint) -> ImapResult<TcpStream> {
-    let s = TcpStream::connect((ep.host.as_str(), ep.port))
+async fn tcp(ep: &ServerEndpoint, limit: Duration) -> ImapResult<TcpStream> {
+    // A black-holed host would otherwise wait for the OS TCP timeout (minutes).
+    let s = timeout(limit, TcpStream::connect((ep.host.as_str(), ep.port)))
         .await
+        .map_err(|_| ImapError::Timeout)?
         .map_err(|e| {
             ImapError::Connection(format!(
                 "cannot reach {}:{}: {}",
@@ -123,14 +130,15 @@ pub async fn open(
     tls: &TlsConnector,
 ) -> ImapResult<ImapSession> {
     let ep = &cfg.imap;
+    let limit = cfg.timeout();
     let client: Client<TlsTransport> = match ep.tls {
         TlsMode::Implicit => {
-            let mut c = Client::new(handshake(tcp(ep).await?, tls, ep).await?);
+            let mut c = Client::new(handshake(tcp(ep, limit).await?, tls, ep).await?);
             expect_greeting(&mut c).await?;
             c
         }
         TlsMode::StartTls => {
-            let mut plain = Client::new(tcp(ep).await?);
+            let mut plain = Client::new(tcp(ep, limit).await?);
             expect_greeting(&mut plain).await?;
             plain
                 .run_command_and_check_ok("STARTTLS", None)
@@ -148,10 +156,10 @@ pub async fn open(
     let result = match cfg.auth {
         AuthMethod::Password => client.login(user, secret.expose_secret()).await,
         AuthMethod::Oauth2 => {
-            let payload = format!(
+            let payload = SecretString::from(format!(
                 "user={user}\x01auth=Bearer {}\x01\x01",
                 secret.expose_secret()
-            );
+            ));
             client
                 .authenticate(
                     "XOAUTH2",

@@ -8,6 +8,7 @@ license.workspace = true
 
 [dependencies]
 openmail-core.workspace = true
+openmail-smtp.workspace = true
 ammonia.workspace = true
 async-imap.workspace = true
 base64.workspace = true
