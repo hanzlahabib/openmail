@@ -78,6 +78,23 @@ fn args_for(tool: &str, account: &str) -> Value {
         "mail_get_message" | "mail_get_headers" | "mail_get_thread" | "mail_list_attachments" => {
             json!({ "message_ref": r })
         }
+        "mail_get_attachment" => json!({ "message_ref": r, "index": 0 }),
+        "mail_mark_read" | "mail_mark_unread" | "mail_archive_message" | "mail_delete_draft" => {
+            json!({ "message_ref": r })
+        }
+        "mail_flag_message" => json!({ "message_ref": r, "flagged": true }),
+        "mail_move_message" => json!({ "message_ref": r, "dest_folder": "Archive" }),
+        "mail_create_draft" => json!({
+            "account": account, "to": [{ "email": "bob@example.com" }], "subject": "Hi", "text": "x"
+        }),
+        "mail_update_draft" => json!({
+            "message_ref": r, "to": [{ "email": "bob@example.com" }], "subject": "Hi", "text": "x"
+        }),
+        "mail_prepare_reply" => json!({ "message_ref": r, "text": "ok" }),
+        "mail_send_approved" => json!({ "message_ref": r }),
+        "mail_forward_approved" => {
+            json!({ "message_ref": r, "to": [{ "email": "bob@example.com" }] })
+        }
         other => panic!("tool {other} has no authorization test case; add it to args_for"),
     }
 }
@@ -86,7 +103,7 @@ fn args_for(tool: &str, account: &str) -> Value {
 async fn every_tool_denies_a_principal_without_access_and_never_reaches_the_backend() {
     let (c, calls) = connect(FakeBackend::default(), principal(&[], &[]), generous()).await;
     let tools = c.list_all_tools().await.unwrap();
-    assert!(tools.len() >= 10);
+    assert!(tools.len() >= 22, "write tools missing: {}", tools.len());
     for t in &tools {
         let r = call(&c, &t.name, args_for(&t.name, "work")).await;
         if t.name == "mail_list_accounts" {

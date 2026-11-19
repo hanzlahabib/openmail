@@ -173,6 +173,54 @@ pub fn safe_capabilities(caps: Vec<String>) -> Vec<String> {
         .collect()
 }
 
+/// A declared content type reduced to a `type/subtype` token (parameters dropped, anything else
+/// becomes `application/octet-stream`); sender text must not ride along in this field.
+pub fn safe_content_type(raw: &str) -> String {
+    let essence = raw
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    let token = |s: &str| {
+        !s.is_empty()
+            && s.len() <= 64
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '+' | '-' | '_'))
+    };
+    match essence.split_once('/') {
+        Some((t, s)) if token(t) && token(s) => essence,
+        _ => "application/octet-stream".to_owned(),
+    }
+}
+
+/// Longest attachment filename passed through (common filesystem limit).
+const MAX_FILENAME_BYTES: usize = 255;
+/// Used when nothing usable remains of a sender-supplied filename.
+const FALLBACK_FILENAME: &str = "attachment";
+
+/// Reduce a sender-controlled filename to a harmless basename: invisible/control characters and
+/// every path or reserved character are dropped, directory parts are discarded, leading and
+/// trailing dots (`..`, hidden files) are trimmed. The server never writes files, but a client
+/// that does must not be handed `../../.ssh/authorized_keys`.
+pub fn sanitize_filename(raw: &str) -> String {
+    let clean = strip_invisible(raw);
+    let base = clean.rsplit(['/', '\\']).next().unwrap_or_default();
+    let kept: String = base
+        .chars()
+        .filter(|c| !c.is_control() && !matches!(c, ':' | '*' | '?' | '"' | '<' | '>' | '|'))
+        .collect();
+    let (name, _) = crate::limits::truncate_utf8(
+        kept.trim().trim_matches('.').trim().to_owned(),
+        MAX_FILENAME_BYTES,
+    );
+    if name.is_empty() {
+        FALLBACK_FILENAME.to_owned()
+    } else {
+        name
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -223,5 +271,16 @@ mod tests {
             "x".repeat(200),
         ];
         assert_eq!(safe_capabilities(caps), ["IMAP4rev1", "AUTH=XOAUTH2"]);
+    }
+
+    #[test]
+    fn filenames_lose_paths_and_control_characters() {
+        assert_eq!(sanitize_filename("../../etc/passwd"), "passwd");
+        assert_eq!(sanitize_filename("C:\\Windows\\evil.exe"), "evil.exe");
+        assert_eq!(sanitize_filename("a/b\\c\u{0}\n.pdf"), "c.pdf");
+        assert_eq!(sanitize_filename(".."), "attachment");
+        assert_eq!(sanitize_filename(""), "attachment");
+        assert_eq!(sanitize_filename("in\u{202e}voice.pdf"), "invoice.pdf");
+        assert!(sanitize_filename(&"é".repeat(400)).len() <= 255);
     }
 }

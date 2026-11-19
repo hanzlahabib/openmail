@@ -111,7 +111,7 @@ pub fn build_server_with_resolver<B: FullBackend>(
     )
 }
 
-fn parse_account(raw: &str) -> Result<AccountId, ToolError> {
+pub(crate) fn parse_account(raw: &str) -> Result<AccountId, ToolError> {
     AccountId::new(raw).map_err(|_| ToolError::invalid("account must be 1-64 chars of [a-z0-9_-]"))
 }
 

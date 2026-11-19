@@ -108,3 +108,20 @@ where
 pub(crate) fn not_configured() -> Error {
     Error::new(ErrorCode::Unsupported, "sending is not configured")
 }
+
+/// The security crate's pending-approval queue is the production requester: it only records a
+/// request for a human to review; granting needs an out-of-band `HumanConfirmation`.
+impl<C> ApprovalRequester for openmail_security::PendingApprovals<C>
+where
+    C: openmail_security::Clock + Clone + Send + Sync,
+{
+    fn request(&self, principal: &str, descriptor: &SendRequestDescriptor) -> Result<String> {
+        let id = openmail_security::PendingApprovals::request(
+            self,
+            principal,
+            descriptor.account(),
+            descriptor,
+        )?;
+        Ok(id.as_str().to_owned())
+    }
+}

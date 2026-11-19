@@ -54,7 +54,13 @@ fn first_ref(page: &Value) -> String {
         .to_owned()
 }
 
-const TOOLS: [&str; 10] = [
+const TOOLS: [&str; 22] = [
+    "mail_archive_message",
+    "mail_create_draft",
+    "mail_delete_draft",
+    "mail_flag_message",
+    "mail_forward_approved",
+    "mail_get_attachment",
     "mail_get_folder_status",
     "mail_get_headers",
     "mail_get_message",
@@ -63,8 +69,35 @@ const TOOLS: [&str; 10] = [
     "mail_list_attachments",
     "mail_list_folders",
     "mail_list_messages",
+    "mail_mark_read",
+    "mail_mark_unread",
+    "mail_move_message",
+    "mail_prepare_reply",
     "mail_search_messages",
+    "mail_send_approved",
     "mail_test_connection",
+    "mail_update_draft",
+];
+
+/// Tools that change state; everything else must be annotated read-only.
+const WRITE_TOOLS: [&str; 11] = [
+    "mail_archive_message",
+    "mail_create_draft",
+    "mail_delete_draft",
+    "mail_flag_message",
+    "mail_forward_approved",
+    "mail_mark_read",
+    "mail_mark_unread",
+    "mail_move_message",
+    "mail_prepare_reply",
+    "mail_send_approved",
+    "mail_update_draft",
+];
+/// The only tools allowed to be destructive: sending is irreversible, draft deletion loses a draft.
+const DESTRUCTIVE_TOOLS: [&str; 3] = [
+    "mail_delete_draft",
+    "mail_forward_approved",
+    "mail_send_approved",
 ];
 
 #[tokio::test]
@@ -97,8 +130,19 @@ async fn tools_list_has_strict_schemas_and_read_only_annotations() {
             .annotations
             .as_ref()
             .unwrap_or_else(|| panic!("{} lacks annotations", t.name));
-        assert_eq!(a.read_only_hint, Some(true), "{}", t.name);
-        assert_eq!(a.destructive_hint, Some(false), "{}", t.name);
+        let writes = WRITE_TOOLS.contains(&&*t.name);
+        assert_eq!(a.read_only_hint, Some(!writes), "{}", t.name);
+        assert_eq!(
+            a.destructive_hint,
+            Some(DESTRUCTIVE_TOOLS.contains(&&*t.name)),
+            "{}",
+            t.name
+        );
+        assert!(
+            !t.name.contains("delete") || t.name == "mail_delete_draft",
+            "{}: no message-delete tool may exist",
+            t.name
+        );
         assert_eq!(
             t.input_schema.get("type"),
             Some(&json!("object")),
