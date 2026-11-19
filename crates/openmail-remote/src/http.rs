@@ -75,6 +75,10 @@ pub struct HttpConfig {
     pub rate_burst: u32,
     /// Peers whose `X-Forwarded-For` is believed (reverse proxies we run).
     pub trusted_proxies: Vec<IpAddr>,
+    /// Extra unauthenticated routes served beside `/mcp` (the built-in OAuth authorization
+    /// server's metadata, registration, authorize and token endpoints). They bring their own
+    /// body limits and are covered by the same per-client rate limit as the probes.
+    pub public_routes: Option<Router>,
 }
 
 impl HttpConfig {
@@ -90,6 +94,7 @@ impl HttpConfig {
             rate_per_sec: DEFAULT_RATE_PER_SEC,
             rate_burst: DEFAULT_RATE_BURST,
             trusted_proxies: Vec::new(),
+            public_routes: None,
         }
     }
 
@@ -329,6 +334,7 @@ async fn readyz(State(state): State<AppState>) -> Response {
 /// Probes are unauthenticated and not Origin-checked, but still rate limited.
 pub fn router(config: HttpConfig, mcp: Router, readiness: Readiness) -> Result<Router, HttpError> {
     config.validate()?;
+    let public_routes = config.public_routes.clone();
     let state: AppState = Arc::new(Shared {
         limiter: RateLimiter::new(config.rate_per_sec, config.rate_burst),
         readiness,
@@ -349,12 +355,16 @@ pub fn router(config: HttpConfig, mcp: Router, readiness: Readiness) -> Result<R
             state.clone(),
             validate_origin,
         ));
-    Ok(Router::new()
+    let mut app = Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
         .route(RESOURCE_METADATA_PATH, get(resource_metadata))
         .with_state(state.clone())
-        .nest(MCP_PATH, protected)
+        .nest(MCP_PATH, protected);
+    if let Some(public) = public_routes {
+        app = app.merge(public);
+    }
+    Ok(app
         // Outermost so unauthenticated floods are throttled before auth work.
         .layer(middleware::from_fn_with_state(state, rate_limit)))
 }

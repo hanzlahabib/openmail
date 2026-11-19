@@ -17,20 +17,12 @@ active (usable by Claude/Cursor/curl, **not** by ChatGPT). Verified from the pub
 valid TLS, `/healthz` 200, `/mcp` 401 without a token, MCP `initialize` OK with the token.
 The single configured account is a read-only placeholder until its password is set.
 
-**Remaining for ChatGPT**: an OAuth 2.1 authorization server (the one thing OpenMail does not ship), then switch the
-service from token mode to JWT mode:
-
-```bash
-# /etc/openmail/env: remove OPENMAIL_HTTP_AUTH_TOKEN_FILE, add (values from your IdP)
-OPENMAIL_HTTP_JWT_ISSUER=https://<idp>/
-OPENMAIL_HTTP_JWT_AUDIENCE=https://mail-mcp.example.com/mcp
-OPENMAIL_HTTP_JWT_JWKS_URL=https://<idp>/.well-known/jwks.json
-OPENMAIL_HTTP_JWT_SCOPE_ACCOUNTS='mail:read=main'
-systemctl restart openmail-mcp
-```
-
-Then add `https://mail-mcp.example.com/mcp` as a custom MCP server in ChatGPT (developer mode), choose OAuth, allowlist
-the redirect URI ChatGPT shows at the IdP, and run [TEST_CHECKLIST.md](TEST_CHECKLIST.md).
+**ChatGPT needs OAuth, and OpenMail now ships its own authorization server** (free, self-hosted, no third-party IdP):
+see "Built-in OAuth authorization server" in `docs/deployment/REMOTE.md`. Enable it by replacing the token file with
+`OPENMAIL_OAUTH_OWNER_PASSWORD_HASH_FILE` in `/etc/openmail/env` and restarting the service. Then add
+`https://mail-mcp.example.com/mcp` as a custom MCP server in ChatGPT (developer mode), choose OAuth with dynamic client
+registration, approve on the OpenMail consent page with the owner password, and run [TEST_CHECKLIST.md](TEST_CHECKLIST.md).
+The flow is verified end to end against a real HTTPS listener in the test suite; it has **not** been tried with a live ChatGPT account.
 
 ## What ChatGPT needs, and what OpenMail has
 

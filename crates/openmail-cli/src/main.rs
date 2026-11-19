@@ -4,6 +4,7 @@ mod brief_cmd;
 mod cli;
 mod doctor;
 mod init;
+mod oauth_cmd;
 mod serve;
 
 use std::process::ExitCode;
@@ -46,6 +47,7 @@ fn main() -> ExitCode {
             args.config = config;
             approvals::run(args)
         }
+        Command::Oauth(args) => oauth_cmd::run(args),
     };
 
     match result {
