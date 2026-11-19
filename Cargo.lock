@@ -225,7 +225,7 @@ checksum = "f97b87216c9f0ccc63c516263169085fa34bba25633f6d96c6a9b9ca1fd5f70a"
 dependencies = [
  "async-channel 2.5.0",
  "async-compression",
- "base64 0.23.1",
+ "base64",
  "bytes",
  "chrono",
  "futures-util",
@@ -341,12 +341,6 @@ name = "base16ct"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fd307490d624467aa6f74b0eabb77633d1f758a7b25f12bceb0b22e08d9726f6"
-
-[[package]]
-name = "base64"
-version = "0.22.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "base64"
@@ -1145,7 +1139,7 @@ version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f690ae2169f2ceb3f45b28b6fcd8fa16839f2f5c8818546774b9425f5f71004"
 dependencies = [
- "base64 0.23.1",
+ "base64",
  "memchr",
 ]
 
@@ -1620,7 +1614,7 @@ version = "0.1.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ddc03d96684f9226b8a787cdb71488417b53ab5ea8fdb1dac946cb9431cc8bff"
 dependencies = [
- "base64 0.23.1",
+ "base64",
  "bytes",
  "futures-channel",
  "futures-util",
@@ -1897,7 +1891,7 @@ version = "12.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f347a975eb5fa8f5c4eadce6c1152c11c326cf32cf839fb64ff12d5cb8f4ce8b"
 dependencies = [
- "base64 0.23.1",
+ "base64",
  "ed25519-dalek",
  "getrandom 0.4.3",
  "hmac 0.13.0",
@@ -1936,7 +1930,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f294f3d7cdb313e578acef7d7727d4e8d897e0fcd0d6d58c19959cec95073f19"
 dependencies = [
  "async-trait",
- "base64 0.23.1",
+ "base64",
  "email-encoding",
  "email_address",
  "fastrand",
@@ -2277,7 +2271,7 @@ version = "0.1.0"
 dependencies = [
  "argon2",
  "axum",
- "base64 0.22.1",
+ "base64",
  "getrandom 0.4.3",
  "http-body-util",
  "jsonwebtoken",
@@ -2300,7 +2294,7 @@ name = "openmail-briefs"
 version = "0.1.0"
 dependencies = [
  "async-imap",
- "base64 0.22.1",
+ "base64",
  "chrono",
  "chrono-tz",
  "croner",
@@ -2333,7 +2327,7 @@ dependencies = [
  "assert_cmd",
  "async-imap",
  "axum",
- "base64 0.22.1",
+ "base64",
  "chrono",
  "clap",
  "openmail-authserver",
@@ -2362,7 +2356,7 @@ dependencies = [
 name = "openmail-core"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
+ "base64",
  "proptest",
  "secrecy",
  "serde",
@@ -2376,7 +2370,7 @@ version = "0.1.0"
 dependencies = [
  "ammonia",
  "async-imap",
- "base64 0.22.1",
+ "base64",
  "futures",
  "html5ever",
  "mail-parser",
@@ -2403,7 +2397,7 @@ dependencies = [
 name = "openmail-mcp"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
+ "base64",
  "openmail-briefs",
  "openmail-core",
  "openmail-observe",
@@ -2426,7 +2420,7 @@ dependencies = [
 name = "openmail-oauth"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
+ "base64",
  "getrandom 0.4.3",
  "openmail-core",
  "reqwest",
@@ -2453,7 +2447,7 @@ name = "openmail-remote"
 version = "0.1.0"
 dependencies = [
  "axum",
- "base64 0.22.1",
+ "base64",
  "jsonwebtoken",
  "openmail-core",
  "openmail-mcp",
@@ -2479,7 +2473,7 @@ name = "openmail-security"
 version = "0.1.0"
 dependencies = [
  "apple-native-keyring-store",
- "base64 0.22.1",
+ "base64",
  "dbus-secret-service-keyring-store",
  "getrandom 0.4.3",
  "keyring-core",
@@ -2499,7 +2493,7 @@ dependencies = [
 name = "openmail-smtp"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
+ "base64",
  "idna",
  "lettre",
  "openmail-core",
@@ -2649,7 +2643,7 @@ version = "4.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d354a98a3d1251555de99e8fdd8afda05573c31b82f59063a7b0a29b5527f120"
 dependencies = [
- "base64 0.23.1",
+ "base64",
  "serde_core",
 ]
 
@@ -3104,7 +3098,7 @@ version = "0.13.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "16a1cfa75cc186dd73d5818e510e042e40927bccc9c236b061cea97e1eb08029"
 dependencies = [
- "base64 0.23.1",
+ "base64",
  "bytes",
  "futures-core",
  "futures-util",
@@ -3170,7 +3164,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "391f153431ab68664d946513ea0cb3edbca78eaf99c5a983036cacab6220d85b"
 dependencies = [
  "async-trait",
- "base64 0.23.1",
+ "base64",
  "bytes",
  "chrono",
  "futures",

@@ -27,7 +27,7 @@ tracing = "0.1"
 rmcp = { version = "3.11", features = ["server", "macros", "schemars", "transport-io"] }
 schemars = "1"
 secrecy = "0.10"
-base64 = "0.22"
+base64 = "0.23"
 sha2 = "0.10"
 time = { version = "0.3", features = ["serde", "formatting", "parsing"] }
 getrandom = "0.4"
