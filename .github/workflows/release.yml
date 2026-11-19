@@ -69,8 +69,9 @@ jobs:
       - name: Install Rust toolchain
         shell: bash
         run: |
-          rustup toolchain install stable --profile minimal --target "${{ matrix.target }}"
-          rustup default stable
+          # Exact version, not `stable`, so a rebuild of the tag uses the same compiler.
+          rustup toolchain install 1.100.0 --profile minimal --target "${{ matrix.target }}"
+          rustup default 1.100.0
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -78,7 +79,12 @@ jobs:
 
       - name: Build
         shell: bash
-        run: cargo build --release --locked -p openmail-cli --bin "$BIN_NAME" --target "${{ matrix.target }}"
+        run: |
+          set -euo pipefail
+          # Reproducibility inputs (see docs/SUPPLY_CHAIN.md): fixed timestamp and path remapping.
+          export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          export RUSTFLAGS="--remap-path-prefix=$PWD=/build --remap-path-prefix=$HOME/.cargo=/cargo"
+          cargo build --release --locked -p openmail-cli --bin "$BIN_NAME" --target "${{ matrix.target }}"
 
       - name: Package
         shell: bash
@@ -96,7 +102,15 @@ jobs:
           if [[ "${{ matrix.archive }}" == "zip" ]]; then
             (cd dist && 7z a -tzip "../out/$name.zip" "$name" >/dev/null)
           else
-            tar -C dist -czf "out/$name.tar.gz" "$name"
+            export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+            if tar --version 2>/dev/null | grep -q GNU; then
+              # Deterministic archive: sorted names, fixed mtime/owner, no gzip timestamp.
+              tar --sort=name --mtime="@${SOURCE_DATE_EPOCH}" --owner=0 --group=0 --numeric-owner \
+                -C dist -cf - "$name" | gzip -n > "out/$name.tar.gz"
+            else
+              echo "::warning::bsdtar lacks --sort; this archive is not byte-reproducible (the binary inside still is)"
+              tar -C dist -czf "out/$name.tar.gz" "$name"
+            fi
           fi
           ls -l out
 
