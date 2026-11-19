@@ -651,6 +651,7 @@ mod tests {
         assert!(err_text(r).contains("reading config"));
     }
 
+    #[cfg(unix)]
     const HTTP_CONFIG: &str = r#"
 version = 1
 [[account]]
