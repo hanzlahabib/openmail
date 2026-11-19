@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "openmail": {
+      "command": "openmail-mcp",
+      "args": ["serve", "--config", "/home/YOU/.config/openmail-mcp/config.toml"]
+    }
+  }
+}

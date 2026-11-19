@@ -1,0 +1,53 @@
+# Three accounts with different trust levels. Fake hosts and credentials.
+version = 1
+
+[limits]
+max_global_connections = 6
+
+[[account]]
+id = "work"
+display_name = "Work"
+email = "alice@corp.example.com"
+username = "alice"
+auth = "oauth2"
+credential = { kind = "keyring", service = "openmail-mcp", user = "work" }
+read_only = false
+permissions = { organize = true, drafts = true, send = false, delete = false }
+[account.imap]
+host = "imap.corp.example.com"
+port = 993
+tls = "implicit"
+[account.smtp]
+host = "smtp.corp.example.com"
+port = 587
+tls = "start_tls"
+
+[[account]]
+id = "support"
+display_name = "Support inbox"
+email = "support@corp.example.com"
+auth = "password"
+credential = { kind = "env", var = "OPENMAIL_SUPPORT_PASSWORD" }
+read_only = false
+permissions = { organize = true, drafts = true, send = true, delete = false }
+max_connections = 3
+[account.imap]
+host = "imap.corp.example.com"
+port = 993
+tls = "implicit"
+[account.smtp]
+host = "smtp.corp.example.com"
+port = 465
+tls = "implicit"
+
+[[account]]
+id = "archive"
+display_name = "Legal archive (read-only)"
+email = "archive@corp.example.com"
+auth = "password"
+credential = { kind = "env", var = "OPENMAIL_ARCHIVE_PASSWORD" }
+timeout_secs = 60
+[account.imap]
+host = "imap.corp.example.com"
+port = 993
+tls = "implicit"
