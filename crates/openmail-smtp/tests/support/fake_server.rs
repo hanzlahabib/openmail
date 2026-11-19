@@ -133,9 +133,9 @@ async fn connection(tcp: TcpStream, script: Script, st: Arc<State>, acceptor: Tl
     }
 }
 
-async fn reply<S: AsyncWrite + Unpin>(s: &mut BufReader<S>, text: &str) -> Option<()> {
-    s.write_all(text.as_bytes()).await.ok()?;
-    s.flush().await.ok()
+async fn reply<S: AsyncRead + AsyncWrite + Unpin>(s: &mut BufReader<S>, text: &str) -> Option<()> {
+    s.get_mut().write_all(text.as_bytes()).await.ok()?;
+    s.get_mut().flush().await.ok()
 }
 
 async fn session<S: AsyncRead + AsyncWrite + Unpin>(mut s: BufReader<S>, secure: bool, greet: bool, script: &Script, st: &State) -> Option<Next<S>> {

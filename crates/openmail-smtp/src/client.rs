@@ -157,11 +157,11 @@ impl<O: OutboxStore, S: SecretSource> SmtpClient<O, S> {
         let envelope_result = tokio::time::timeout(timeout, send_envelope(&mut conn, built)).await;
         match envelope_result {
             Err(_) => {
-                conn.abort().await;
+                abort_quick(&mut conn).await;
                 return Err(DeliveryError::NotSent(timed_out("envelope")));
             }
             Ok(Err(e)) => {
-                conn.abort().await;
+                abort_quick(&mut conn).await;
                 return Err(DeliveryError::NotSent(e));
             }
             Ok(Ok(())) => {}
@@ -169,7 +169,7 @@ impl<O: OutboxStore, S: SecretSource> SmtpClient<O, S> {
 
         // Durable marker BEFORE DATA is issued: a crash from here on resolves to Uncertain.
         if let Err(e) = self.outbox.mark_data_started(&account.id, &record.idempotency_key).await {
-            conn.abort().await;
+            abort_quick(&mut conn).await;
             return Err(DeliveryError::NotSent(e));
         }
 
@@ -182,7 +182,7 @@ impl<O: OutboxStore, S: SecretSource> SmtpClient<O, S> {
             Ok(()) => {
                 let _ = tokio::time::timeout(QUIT_TIMEOUT, conn.quit()).await;
             }
-            Err(_) => conn.abort().await,
+            Err(_) => abort_quick(&mut conn).await,
         }
         outcome
     }
@@ -201,18 +201,18 @@ impl<O: OutboxStore, S: SecretSource> SmtpClient<O, S> {
                     .await
                     .map_err(|e| map_pre_data(&e, "connect"))?;
                 if !c.can_starttls() {
-                    c.abort().await;
+                    abort_quick(&mut c).await;
                     return Err(coded(ErrorCode::ConnectionFailed, "server does not offer STARTTLS; refusing to continue unencrypted"));
                 }
                 if let Err(e) = c.starttls(tls, &hello).await {
-                    c.abort().await;
+                    abort_quick(&mut c).await;
                     return Err(map_pre_data(&e, "STARTTLS"));
                 }
                 c
             }
         };
         if !conn.is_encrypted() {
-            conn.abort().await;
+            abort_quick(&mut conn).await;
             return Err(coded(ErrorCode::ConnectionFailed, "connection is not encrypted; refusing to authenticate"));
         }
         let secret = self.secrets.resolve(&account.credential)?;
@@ -223,7 +223,7 @@ impl<O: OutboxStore, S: SecretSource> SmtpClient<O, S> {
             AuthMethod::Oauth2 => &[Mechanism::Xoauth2],
         };
         if let Err(e) = conn.auth(mechanisms, &creds).await {
-            conn.abort().await;
+            abort_quick(&mut conn).await;
             return Err(map_pre_data(&e, "authentication"));
         }
         Ok(conn)
@@ -237,6 +237,12 @@ impl<O: OutboxStore, S: SecretSource> SmtpClient<O, S> {
         }
         builder.build_rustls().map_err(|_| coded(ErrorCode::ConnectionFailed, "cannot initialise TLS"))
     }
+}
+
+/// lettre's `abort()` sends QUIT and waits for the reply with no timeout of its own; a
+/// silent server would hang us forever, so bound it.
+async fn abort_quick(conn: &mut AsyncSmtpConnection) {
+    let _ = tokio::time::timeout(QUIT_TIMEOUT, conn.abort()).await;
 }
 
 enum DeliveryError {

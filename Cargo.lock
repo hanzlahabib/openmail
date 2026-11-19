@@ -705,6 +705,7 @@ dependencies = [
 name = "openmail-smtp"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "idna",
  "lettre",
  "openmail-core",
