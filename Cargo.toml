@@ -31,12 +31,10 @@ secrecy = "0.10"
 base64 = "0.22"
 sha2 = "0.10"
 time = { version = "0.3", features = ["serde", "formatting", "parsing"] }
-<<<<<<< HEAD
 getrandom = "0.4"
 keyring = "4"
 rusqlite = { version = "0.43", features = ["bundled"] }
 subtle = "2"
-=======
 ammonia = "4"
 async-imap = { version = "0.12", default-features = false, features = ["runtime-tokio"] }
 futures = "0.3"
@@ -45,7 +43,6 @@ rcgen = "0.14"
 rustls-native-certs = "0.8"
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 webpki-roots = "1"
->>>>>>> wave1-imap
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
