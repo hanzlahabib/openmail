@@ -68,3 +68,40 @@ pub trait MailOrganizer: Send + Sync + 'static {
 pub trait SecretSource: Send + Sync {
     fn resolve(&self, reference: &crate::config::CredentialRef) -> Result<secrecy::SecretString>;
 }
+
+/// Draft management in the account's Drafts folder (IMAP APPEND/STORE/EXPUNGE).
+/// Requires `permissions.drafts`; the caller (MCP layer) authorizes before calling.
+pub trait MailDrafts: Send + Sync + 'static {
+    fn create_draft(
+        &self,
+        account: &AccountId,
+        draft: DraftInput,
+    ) -> impl Future<Output = Result<MessageRef>> + Send;
+    /// Replaces the draft; returns the new reference (IMAP drafts are replaced, not edited in place).
+    fn update_draft(
+        &self,
+        reference: &MessageRef,
+        draft: DraftInput,
+    ) -> impl Future<Output = Result<MessageRef>> + Send;
+    fn delete_draft(&self, reference: &MessageRef) -> impl Future<Output = Result<()>> + Send;
+}
+
+/// Attachment bytes on demand; never touches the local filesystem.
+pub trait AttachmentSource: Send + Sync + 'static {
+    /// Fails with `LimitExceeded` when the part is larger than `max_bytes`.
+    fn get_attachment(
+        &self,
+        reference: &MessageRef,
+        index: u32,
+        max_bytes: usize,
+    ) -> impl Future<Output = Result<AttachmentData>> + Send;
+}
+
+/// Stores a copy of a delivered message in the account's Sent folder (RFC 5322 bytes).
+pub trait SentFolder: Send + Sync + 'static {
+    fn append_sent(
+        &self,
+        account: &AccountId,
+        rfc822: Vec<u8>,
+    ) -> impl Future<Output = Result<()>> + Send;
+}

@@ -1,4 +1,5 @@
 mod accounts;
+mod approvals;
 mod brief_cmd;
 mod cli;
 mod doctor;
@@ -40,6 +41,10 @@ fn main() -> ExitCode {
         Command::Brief(mut args) => {
             args.config = config;
             brief_cmd::run(args)
+        }
+        Command::Approvals(mut args) => {
+            args.config = config;
+            approvals::run(args)
         }
     };
 

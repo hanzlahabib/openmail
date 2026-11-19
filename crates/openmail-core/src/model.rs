@@ -121,3 +121,22 @@ pub struct ConnectionReport {
     /// Sanitized, actionable diagnostic; never contains credentials.
     pub detail: Option<String>,
 }
+
+/// Input for creating or replacing a draft. Content only; sending is a separate approved action.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct DraftInput {
+    pub to: Vec<Address>,
+    pub cc: Vec<Address>,
+    pub bcc: Vec<Address>,
+    pub subject: String,
+    pub text: Option<String>,
+    pub html: Option<String>,
+    /// When replying: the message being answered (threading headers are derived from it).
+    pub in_reply_to: Option<crate::ids::MessageRef>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttachmentData {
+    pub meta: AttachmentMeta,
+    pub bytes: Vec<u8>,
+}
