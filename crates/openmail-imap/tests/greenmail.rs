@@ -347,34 +347,84 @@ async fn seed_three(env: &Env) -> ImapBackend {
     let mut admin = env.gm.admin("alice", PW).await;
     admin.create("Archive").await.unwrap();
     for i in 1..=3 {
-        admin.append("INBOX", None, None, eml(&format!("Mail {i}"), "x@example.com", &format!("o{i}@example.com"), "", "b")).await.unwrap();
+        admin
+            .append(
+                "INBOX",
+                None,
+                None,
+                eml(
+                    &format!("Mail {i}"),
+                    "x@example.com",
+                    &format!("o{i}@example.com"),
+                    "",
+                    "b",
+                ),
+            )
+            .await
+            .unwrap();
     }
-    backend(env, vec![writable(alice(env, TlsMode::Implicit))], Limits::default())
+    backend(
+        env,
+        vec![writable(alice(env, TlsMode::Implicit))],
+        Limits::default(),
+    )
 }
 
 async fn move_roundtrip(env: &Env, b: &ImapBackend) {
     let a = id("alice");
     let list = b.list_messages(&a, "INBOX", page(10)).await.unwrap();
-    let target = list.items.iter().find(|m| m.subject.0 == "Mail 2").unwrap().reference.clone();
-    let keep = list.items.iter().find(|m| m.subject.0 == "Mail 3").unwrap().reference.clone();
+    let target = list
+        .items
+        .iter()
+        .find(|m| m.subject.0 == "Mail 2")
+        .unwrap()
+        .reference
+        .clone();
+    let keep = list
+        .items
+        .iter()
+        .find(|m| m.subject.0 == "Mail 3")
+        .unwrap()
+        .reference
+        .clone();
     let moved = b.move_message(&target, "Archive").await.unwrap();
     assert_eq!(moved.folder, "Archive");
     assert_eq!(moved.account, a);
-    assert_eq!(b.get_message(&moved, 1000).await.unwrap().summary.subject.0, "Mail 2");
-    assert_eq!(b.get_message(&target, 1000).await.unwrap_err().code(), ErrorCode::MessageNotFound);
+    assert_eq!(
+        b.get_message(&moved, 1000).await.unwrap().summary.subject.0,
+        "Mail 2"
+    );
+    assert_eq!(
+        b.get_message(&target, 1000).await.unwrap_err().code(),
+        ErrorCode::MessageNotFound
+    );
     // Only the target left INBOX; neighbours (even one flagged \Deleted by someone else) stay.
     let inbox = b.list_messages(&a, "INBOX", page(10)).await.unwrap();
     assert_eq!(inbox.items.len(), 2);
     assert!(inbox.items.iter().any(|m| m.reference == keep));
-    assert_eq!(b.move_message(&keep, "NoSuchFolder").await.unwrap_err().code(), ErrorCode::FolderNotFound);
-    assert!(b.get_message(&keep, 1000).await.is_ok(), "failed move must not lose the message");
-    assert_eq!(b.move_message(&keep, "INBOX").await.unwrap_err().code(), ErrorCode::InvalidInput);
+    assert_eq!(
+        b.move_message(&keep, "NoSuchFolder")
+            .await
+            .unwrap_err()
+            .code(),
+        ErrorCode::FolderNotFound
+    );
+    assert!(
+        b.get_message(&keep, 1000).await.is_ok(),
+        "failed move must not lose the message"
+    );
+    assert_eq!(
+        b.move_message(&keep, "INBOX").await.unwrap_err().code(),
+        ErrorCode::InvalidInput
+    );
     let _ = env;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn flags_permissions_and_move() {
-    let Some(env) = env(Mode::Implicit, false).await else { return };
+    let Some(env) = env(Mode::Implicit, false).await else {
+        return;
+    };
     let b = seed_three(&env).await;
     let a = id("alice");
     let list = b.list_messages(&a, "INBOX", page(10)).await.unwrap();
@@ -388,44 +438,92 @@ async fn flags_permissions_and_move() {
     b.set_flagged(&r, false).await.unwrap();
     let m = b.get_message(&r, 1000).await.unwrap();
     assert!(!m.summary.flags.seen && !m.summary.flags.flagged);
-    let ghost = MessageRef { uid: 9999, ..r.clone() };
-    assert_eq!(b.set_seen(&ghost, true).await.unwrap_err().code(), ErrorCode::MessageNotFound);
+    let ghost = MessageRef {
+        uid: 9999,
+        ..r.clone()
+    };
+    assert_eq!(
+        b.set_seen(&ghost, true).await.unwrap_err().code(),
+        ErrorCode::MessageNotFound
+    );
 
     // Server-side MOVE path.
     move_roundtrip(&env, &b).await;
 
     // Read-only accounts cannot write, regardless of the caller.
-    let ro = backend(&env, vec![alice(&env, TlsMode::Implicit)], Limits::default());
-    assert_eq!(ro.set_seen(&r, true).await.unwrap_err().code(), ErrorCode::ReadOnlyAccount);
-    assert_eq!(ro.move_message(&r, "Archive").await.unwrap_err().code(), ErrorCode::ReadOnlyAccount);
+    let ro = backend(
+        &env,
+        vec![alice(&env, TlsMode::Implicit)],
+        Limits::default(),
+    );
+    assert_eq!(
+        ro.set_seen(&r, true).await.unwrap_err().code(),
+        ErrorCode::ReadOnlyAccount
+    );
+    assert_eq!(
+        ro.move_message(&r, "Archive").await.unwrap_err().code(),
+        ErrorCode::ReadOnlyAccount
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn move_falls_back_to_copy_and_uid_expunge_without_move_capability() {
-    let Some(env) = env(Mode::Implicit, true).await else { return };
+    let Some(env) = env(Mode::Implicit, true).await else {
+        return;
+    };
     let b = seed_three(&env).await;
     let report = b.test_connection(&id("alice")).await.unwrap();
-    assert!(!report.capabilities.iter().any(|c| c == "MOVE"), "proxy must hide MOVE: {:?}", report.capabilities);
+    assert!(
+        !report.capabilities.iter().any(|c| c == "MOVE"),
+        "proxy must hide MOVE: {:?}",
+        report.capabilities
+    );
     assert!(report.capabilities.iter().any(|c| c == "UIDPLUS"));
     // A bystander flagged \Deleted must survive: plain EXPUNGE would destroy it.
     let mut admin = env.gm.admin("alice", PW).await;
     admin.select("INBOX").await.unwrap();
-    let _: Vec<_> = futures::TryStreamExt::try_collect(admin.store("3", "+FLAGS (\\Deleted)").await.unwrap()).await.unwrap();
+    let _: Vec<_> =
+        futures::TryStreamExt::try_collect(admin.store("3", "+FLAGS (\\Deleted)").await.unwrap())
+            .await
+            .unwrap();
     move_roundtrip(&env, &b).await;
     let mut admin = env.gm.admin("alice", PW).await;
     let mb = admin.select("INBOX").await.unwrap();
-    assert_eq!(mb.exists, 2, "bystander flagged \\Deleted is still present (UID EXPUNGE only)");
+    assert_eq!(
+        mb.exists, 2,
+        "bystander flagged \\Deleted is still present (UID EXPUNGE only)"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn uidvalidity_change_makes_references_and_cursors_stale() {
-    let Some(env) = env(Mode::Implicit, false).await else { return };
+    let Some(env) = env(Mode::Implicit, false).await else {
+        return;
+    };
     let mut admin = env.gm.admin("alice", PW).await;
     admin.create("Temp").await.unwrap();
     for i in 1..=3 {
-        admin.append("Temp", None, None, eml(&format!("T{i}"), "x@example.com", &format!("t{i}@example.com"), "", "b")).await.unwrap();
+        admin
+            .append(
+                "Temp",
+                None,
+                None,
+                eml(
+                    &format!("T{i}"),
+                    "x@example.com",
+                    &format!("t{i}@example.com"),
+                    "",
+                    "b",
+                ),
+            )
+            .await
+            .unwrap();
     }
-    let b = backend(&env, vec![writable(alice(&env, TlsMode::Implicit))], Limits::default());
+    let b = backend(
+        &env,
+        vec![writable(alice(&env, TlsMode::Implicit))],
+        Limits::default(),
+    );
     let a = id("alice");
     let first = b.list_messages(&a, "Temp", page(2)).await.unwrap();
     let cursor = first.next_cursor.clone().unwrap();
@@ -435,15 +533,234 @@ async fn uidvalidity_change_makes_references_and_cursors_stale() {
     // Recreate the folder: a real server must issue a new UIDVALIDITY.
     admin.delete("Temp").await.unwrap();
     admin.create("Temp").await.unwrap();
-    admin.append("Temp", None, None, eml("New", "x@example.com", "new@example.com", "", "b")).await.unwrap();
+    admin
+        .append(
+            "Temp",
+            None,
+            None,
+            eml("New", "x@example.com", "new@example.com", "", "b"),
+        )
+        .await
+        .unwrap();
     let status = b.folder_status(&a, "Temp").await.unwrap();
-    assert_ne!(status.uid_validity, r.uid_validity, "greenmail should assign a new UIDVALIDITY on recreate");
-    assert_eq!(b.get_message(&r, 100).await.unwrap_err().code(), ErrorCode::StaleReference);
-    assert_eq!(b.set_seen(&r, true).await.unwrap_err().code(), ErrorCode::StaleReference);
-    let paged = b.list_messages(&a, "Temp", PageRequest { cursor: Some(cursor), limit: 2 }).await;
+    assert_ne!(
+        status.uid_validity, r.uid_validity,
+        "greenmail should assign a new UIDVALIDITY on recreate"
+    );
+    assert_eq!(
+        b.get_message(&r, 100).await.unwrap_err().code(),
+        ErrorCode::StaleReference
+    );
+    assert_eq!(
+        b.set_seen(&r, true).await.unwrap_err().code(),
+        ErrorCode::StaleReference
+    );
+    let paged = b
+        .list_messages(
+            &a,
+            "Temp",
+            PageRequest {
+                cursor: Some(cursor),
+                limit: 2,
+            },
+        )
+        .await;
     assert_eq!(paged.unwrap_err().code(), ErrorCode::StaleReference);
 
     // A reference forged with the wrong validity is stale even on an untouched folder.
-    let inbox_ref = MessageRef { account: a.clone(), folder: "INBOX".into(), uid_validity: 1, uid: 1 };
-    assert_eq!(b.get_message(&inbox_ref, 100).await.unwrap_err().code(), ErrorCode::StaleReference);
+    let inbox_ref = MessageRef {
+        account: a.clone(),
+        folder: "INBOX".into(),
+        uid_validity: 1,
+        uid: 1,
+    };
+    assert_eq!(
+        b.get_message(&inbox_ref, 100).await.unwrap_err().code(),
+        ErrorCode::StaleReference
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn reconnects_after_server_side_disconnect() {
+    let Some(env) = env(Mode::Implicit, false).await else {
+        return;
+    };
+    let b = backend(
+        &env,
+        vec![alice(&env, TlsMode::Implicit)],
+        Limits::default(),
+    );
+    let a = id("alice");
+    b.list_folders(&a).await.unwrap();
+    assert_eq!(env.proxy.stats.total.load(Ordering::SeqCst), 1);
+
+    // Pooled session is killed behind the pool's back; the next call must transparently reconnect.
+    env.proxy.kill_all();
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let folders = b.list_folders(&a).await.unwrap();
+    assert!(folders.iter().any(|f| f.name == "INBOX"));
+    assert_eq!(
+        env.proxy.stats.total.load(Ordering::SeqCst),
+        2,
+        "exactly one reconnect"
+    );
+
+    // Several kills in a row stay recoverable.
+    for _ in 0..2 {
+        env.proxy.kill_all();
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(b.folder_status(&a, "INBOX").await.is_ok());
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn connection_limits_are_enforced() {
+    let Some(env) = env(Mode::Implicit, false).await else {
+        return;
+    };
+
+    // Per-account cap: 8 concurrent calls on a max_connections=1 account share one socket.
+    let mut one = alice(&env, TlsMode::Implicit);
+    one.max_connections = 1;
+    let b = std::sync::Arc::new(backend(&env, vec![one], Limits::default()));
+    let tasks: Vec<_> = (0..8)
+        .map(|_| {
+            let b = b.clone();
+            tokio::spawn(async move { b.folder_status(&id("alice"), "INBOX").await })
+        })
+        .collect();
+    for t in tasks {
+        t.await.unwrap().unwrap();
+    }
+    assert_eq!(env.proxy.stats.peak.load(Ordering::SeqCst), 1);
+
+    // 100 configured accounts, global cap 4: never more than 4 live sockets, every call succeeds.
+    let env2 = self::env(Mode::Implicit, false).await.unwrap();
+    let accounts: Vec<_> = (0..100)
+        .map(|i| {
+            account(
+                &format!("acct-{i}"),
+                "alice",
+                "PW",
+                env2.proxy.port,
+                TlsMode::Implicit,
+            )
+        })
+        .collect();
+    let limits = Limits {
+        max_global_connections: 4,
+        ..Limits::default()
+    };
+    let b = std::sync::Arc::new(backend(&env2, accounts, limits));
+    assert_eq!(
+        env2.proxy.stats.total.load(Ordering::SeqCst),
+        0,
+        "lazy: nothing connects at construction"
+    );
+    let tasks: Vec<_> = (0..100)
+        .map(|i| {
+            let b = b.clone();
+            tokio::spawn(async move { b.folder_status(&id(&format!("acct-{i}")), "INBOX").await })
+        })
+        .collect();
+    for t in tasks {
+        t.await.unwrap().unwrap();
+    }
+    let peak = env2.proxy.stats.peak.load(Ordering::SeqCst);
+    assert!(peak <= 4, "peak live sockets {peak} exceeded global cap 4");
+    assert!(b.pool().open_sessions() <= 4);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn exhausted_pool_times_out_with_limit_exceeded() {
+    let Some(env) = env(Mode::Implicit, false).await else {
+        return;
+    };
+    let mut cfg = alice(&env, TlsMode::Implicit);
+    cfg.max_connections = 1;
+    cfg.timeout_secs = 1;
+    let b = std::sync::Arc::new(backend(&env, vec![cfg], Limits::default()));
+    // Hold the only session (as a long-running operation would) so the next caller must wait.
+    let held = b.pool().lease(&id("alice")).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let err = b.folder_status(&id("alice"), "INBOX").await.unwrap_err();
+    assert_eq!(err.code(), ErrorCode::LimitExceeded);
+    drop(held);
+    assert!(b.folder_status(&id("alice"), "INBOX").await.is_ok());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn threading_exact_and_heuristic() {
+    let Some(env) = env(Mode::Implicit, false).await else {
+        return;
+    };
+    let mut admin = env.gm.admin("alice", PW).await;
+    let mails = [
+        eml("Launch plan", "a@example.com", "t1@example.com", "", "root"),
+        eml(
+            "Re: Launch plan",
+            "b@example.com",
+            "t2@example.com",
+            "In-Reply-To: <t1@example.com>\r\nReferences: <t1@example.com>\r\n",
+            "reply",
+        ),
+        eml(
+            "Re: Re: Launch plan",
+            "c@example.com",
+            "t3@example.com",
+            "In-Reply-To: <t2@example.com>\r\nReferences: <t1@example.com> <t2@example.com>\r\n",
+            "reply2",
+        ),
+        eml("Unrelated", "d@example.com", "u1@example.com", "", "other"),
+        // Same subject, no header link: heuristic only.
+        eml(
+            "Launch plan",
+            "e@example.com",
+            "h1@example.com",
+            "",
+            "lookalike",
+        ),
+    ];
+    for m in mails {
+        admin.append("INBOX", None, None, m).await.unwrap();
+    }
+    let b = backend(
+        &env,
+        vec![alice(&env, TlsMode::Implicit)],
+        Limits::default(),
+    );
+    let a = id("alice");
+    let all = b.list_messages(&a, "INBOX", page(20)).await.unwrap();
+    let by_subject = |s: &str, from: &str| {
+        all.items
+            .iter()
+            .find(|m| m.subject.0 == s && m.from[0].email == from)
+            .unwrap()
+            .reference
+            .clone()
+    };
+    let middle = by_subject("Re: Launch plan", "b@example.com");
+
+    let thread = b.thread(&middle).await.unwrap();
+    let rel = |from: &str| {
+        thread
+            .iter()
+            .find(|e| e.summary.from[0].email == from)
+            .map(|e| e.relation)
+    };
+    assert_eq!(rel("a@example.com"), Some(ThreadRelation::Exact));
+    assert_eq!(rel("b@example.com"), Some(ThreadRelation::Anchor));
+    assert_eq!(rel("c@example.com"), Some(ThreadRelation::Exact));
+    assert_eq!(rel("e@example.com"), Some(ThreadRelation::Heuristic));
+    assert_eq!(rel("d@example.com"), None);
+    let reply = thread
+        .iter()
+        .find(|e| e.summary.from[0].email == "c@example.com")
+        .unwrap();
+    assert_eq!(reply.parent_message_id.as_deref(), Some("t2@example.com"));
+
+    // The trait method returns only header-proven members, oldest first by date then UID.
+    let plain = b.get_thread(&middle).await.unwrap();
+    let froms: Vec<_> = plain.iter().map(|m| m.from[0].email.as_str()).collect();
+    assert_eq!(froms, ["a@example.com", "b@example.com", "c@example.com"]);
 }

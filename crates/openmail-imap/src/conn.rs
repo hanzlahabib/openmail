@@ -1,21 +1,52 @@
 //! Opening and authenticating one IMAP session (implicit TLS or STARTTLS).
-use std::fmt::Debug;
+use std::io;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 
 use async_imap::imap_proto::{Response, Status};
 use async_imap::{Authenticator, Client, Session};
 use openmail_core::config::{AccountConfig, AuthMethod, ServerEndpoint, TlsMode};
 use secrecy::{ExposeSecret, SecretString};
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
+use tokio_rustls::client::TlsStream;
 use tokio_rustls::rustls::pki_types::ServerName;
 
 use crate::error::{ImapError, ImapResult};
 
-pub trait Io: AsyncRead + AsyncWrite + Unpin + Send + Debug {}
-impl<T: AsyncRead + AsyncWrite + Unpin + Send + Debug> Io for T {}
-pub type BoxedIo = Box<dyn Io>;
-pub type ImapSession = Session<BoxedIo>;
+/// The only transport that ever carries an authenticated session: TLS over TCP. A
+/// concrete type (not `Box<dyn ...>`) keeps pooled futures `Send` for the compiler.
+#[derive(Debug)]
+pub struct TlsTransport(TlsStream<TcpStream>);
+
+impl AsyncRead for TlsTransport {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.0).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for TlsTransport {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.0).poll_write(cx, buf)
+    }
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.0).poll_flush(cx)
+    }
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.0).poll_shutdown(cx)
+    }
+}
+
+pub type ImapSession = Session<TlsTransport>;
 
 struct XOAuth2 {
     payload: String,
@@ -50,21 +81,23 @@ async fn tcp(ep: &ServerEndpoint) -> ImapResult<TcpStream> {
     Ok(s)
 }
 
-async fn handshake<T: Io + 'static>(
-    stream: T,
+async fn handshake(
+    stream: TcpStream,
     tls: &TlsConnector,
     ep: &ServerEndpoint,
-) -> ImapResult<BoxedIo> {
+) -> ImapResult<TlsTransport> {
     let name = ServerName::try_from(ep.host.clone())
         .map_err(|_| ImapError::Connection("invalid server host name".into()))?;
     let s = tls
         .connect(name, stream)
         .await
         .map_err(|e| ImapError::Connection(format!("TLS handshake failed: {e}")))?;
-    Ok(Box::new(s))
+    Ok(TlsTransport(s))
 }
 
-async fn expect_greeting<T: Io + 'static>(client: &mut Client<T>) -> ImapResult<()> {
+async fn expect_greeting<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug>(
+    client: &mut Client<T>,
+) -> ImapResult<()> {
     let greeting = client
         .read_response()
         .await
@@ -90,7 +123,7 @@ pub async fn open(
     tls: &TlsConnector,
 ) -> ImapResult<ImapSession> {
     let ep = &cfg.imap;
-    let client: Client<BoxedIo> = match ep.tls {
+    let client: Client<TlsTransport> = match ep.tls {
         TlsMode::Implicit => {
             let mut c = Client::new(handshake(tcp(ep).await?, tls, ep).await?);
             expect_greeting(&mut c).await?;
