@@ -79,6 +79,7 @@ fn scheduler<H: JobHandler>(
 
 /// Child role: tick once as its own process and report the outcome on stdout.
 #[test]
+#[allow(clippy::print_stdout)] // the parent process reads this line
 fn child_process_tick() {
     if std::env::var_os(CHILD_ENV).is_none() {
         return;
