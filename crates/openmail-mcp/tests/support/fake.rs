@@ -2,11 +2,11 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, dead_code)]
 use std::sync::Arc;
 
+use openmail_core::backend::MailBackend;
 use openmail_core::config::Config;
 use openmail_core::ids::{AccountId, MessageRef};
 use openmail_core::model::*;
 use openmail_core::{Error, ErrorCode, Result};
-use openmail_core::backend::MailBackend;
 
 pub const UID_VALIDITY: u32 = 7;
 pub const INJECTION: &str =
