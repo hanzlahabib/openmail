@@ -85,6 +85,8 @@ pub struct FakeBackend {
     pub sent_copies: Arc<Mutex<Vec<Vec<u8>>>>,
     /// Makes `append_sent` fail, to prove a Sent-folder failure is not fatal.
     pub fail_append_sent: bool,
+    /// Makes `get_attachment` ignore `max_bytes`, to prove the MCP layer enforces its own cap.
+    pub ignore_attachment_cap: bool,
     /// Number of backend calls made; authorization tests assert it stays 0 on denial.
     pub calls: Arc<AtomicUsize>,
 }
@@ -111,6 +113,7 @@ impl Default for FakeBackend {
             created_drafts: Arc::default(),
             sent_copies: Arc::default(),
             fail_append_sent: false,
+            ignore_attachment_cap: false,
         }
     }
 }
@@ -329,7 +332,7 @@ impl AttachmentSource for FakeBackend {
         max_bytes: usize,
     ) -> Result<AttachmentData> {
         self.hit();
-        if self.attachment_bytes.len() > max_bytes {
+        if self.attachment_bytes.len() > max_bytes && !self.ignore_attachment_cap {
             return Err(Error::new(ErrorCode::LimitExceeded, "too large"));
         }
         Ok(AttachmentData {
