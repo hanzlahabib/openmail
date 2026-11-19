@@ -324,8 +324,7 @@ fn build_auth(
                     config.accounts.iter().map(|a| a.id.clone()).collect();
                 let bearer = StaticBearer::new(&read_token_file(file)?, actions, accounts);
                 let resource = base.join("/mcp").context("building resource URI")?;
-                let metadata =
-                    ProtectedResourceMetadata::new(resource.as_str(), base.as_str(), &[]);
+                let metadata = ProtectedResourceMetadata::static_bearer(resource.as_str());
                 (
                     Arc::new(Authenticator::<HttpsJwksFetcher>::Static(bearer)),
                     metadata,
