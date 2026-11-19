@@ -229,3 +229,227 @@ impl DigestSender for NoDigest {
         ))
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use openmail_core::config::{
+        AuthMethod, CredentialRef, FolderMap, Permissions, ServerEndpoint, TlsMode,
+    };
+    use openmail_core::ids::AccountId;
+    use secrecy::SecretString;
+
+    use super::*;
+    use crate::store::BriefStore;
+
+    struct NoSecrets;
+    impl SecretSource for NoSecrets {
+        fn resolve(&self, _: &openmail_core::config::CredentialRef) -> Result<SecretString> {
+            Err(Error::new(
+                ErrorCode::Unsupported,
+                "no secrets in unit tests",
+            ))
+        }
+    }
+
+    fn account(read_only: bool, send: bool, smtp: bool) -> AccountConfig {
+        let endpoint = ServerEndpoint {
+            host: "h.example".into(),
+            port: 465,
+            tls: TlsMode::Implicit,
+        };
+        AccountConfig {
+            id: AccountId::new("work").unwrap(),
+            display_name: "Work".into(),
+            email: "Me@Work.Example".into(),
+            imap: endpoint.clone(),
+            smtp: smtp.then_some(endpoint),
+            auth: AuthMethod::Password,
+            username: None,
+            credential: CredentialRef::Env { var: "X".into() },
+            read_only,
+            permissions: Permissions {
+                send,
+                ..Permissions::default()
+            },
+            folders: FolderMap::default(),
+            max_connections: 1,
+            timeout_secs: 5,
+        }
+    }
+
+    fn store() -> (SharedStore, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let s = BriefStore::open(&dir.path().join("b.db")).unwrap();
+        (Arc::new(Mutex::new(s)), dir)
+    }
+
+    fn sender(acc: AccountConfig, store: SharedStore) -> Result<SmtpDigestSender<NoSecrets>> {
+        let client = SmtpClient::new(
+            SqliteOutbox::open_in_memory().unwrap(),
+            NoSecrets,
+            openmail_smtp::SmtpOptions::default(),
+        );
+        SmtpDigestSender::new(client, acc, store)
+    }
+
+    fn request(to: &[&str], cc: &[&str], subject: &str) -> SendRequest {
+        let addr = |e: &&str| Address {
+            name: None,
+            email: (*e).to_owned(),
+        };
+        SendRequest {
+            idempotency_key: "digest-x".into(),
+            from: addr(&"me@work.example"),
+            to: to.iter().map(addr).collect(),
+            cc: cc.iter().map(addr).collect(),
+            bcc: Vec::new(),
+            subject: subject.into(),
+            text: Some("body".into()),
+            html: None,
+            attachments: Vec::new(),
+            in_reply_to: None,
+            references: Vec::new(),
+        }
+    }
+
+    fn approve(r: &SendRequest, principal: &str) -> Result<()> {
+        let acc = AccountId::new("work").unwrap();
+        ApprovalProof::obtain(
+            &OwnerOnlyConsumer::new("me@work.example"),
+            principal,
+            &acc,
+            r,
+            None,
+        )
+        .map(|_| ())
+    }
+
+    #[test]
+    fn the_consumer_approves_exactly_one_request_shape() {
+        let good = format!("{DIGEST_SUBJECT_PREFIX} Morning");
+        assert!(approve(&request(&["ME@work.example"], &[], &good), PRINCIPAL).is_ok());
+        for (name, r, who) in [
+            (
+                "other recipient",
+                request(&["boss@work.example"], &[], &good),
+                PRINCIPAL,
+            ),
+            (
+                "owner plus another",
+                request(&["me@work.example", "x@y.example"], &[], &good),
+                PRINCIPAL,
+            ),
+            (
+                "owner plus cc",
+                request(&["me@work.example"], &["x@y.example"], &good),
+                PRINCIPAL,
+            ),
+            ("no recipients", request(&[], &[], &good), PRINCIPAL),
+            (
+                "ordinary subject",
+                request(&["me@work.example"], &[], "Wire the money"),
+                PRINCIPAL,
+            ),
+            (
+                "another principal",
+                request(&["me@work.example"], &[], &good),
+                "mcp-agent",
+            ),
+        ] {
+            let e = approve(&r, who).unwrap_err();
+            assert_eq!(e.code(), ErrorCode::AccessDenied, "{name}");
+        }
+    }
+
+    #[test]
+    fn only_an_account_that_may_send_can_have_a_digest_sender() {
+        let (st, _d) = store();
+        assert!(sender(account(false, true, true), Arc::clone(&st)).is_ok());
+        for (name, acc) in [
+            ("read-only", account(true, true, true)),
+            ("no send permission", account(false, false, true)),
+        ] {
+            assert_eq!(
+                sender(acc, Arc::clone(&st)).unwrap_err().code(),
+                ErrorCode::AccessDenied,
+                "{name}"
+            );
+        }
+        assert_eq!(
+            sender(account(false, true, false), st).unwrap_err().code(),
+            ErrorCode::ConfigInvalid
+        );
+    }
+
+    fn digest(brief: &str, to: &str) -> Digest {
+        Digest {
+            brief_id: brief.into(),
+            recipient: to.into(),
+            subject: "Morning".into(),
+            body_markdown: "# x".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_digest_for_anyone_but_the_owner_is_refused_before_any_audit_row_or_network_use() {
+        let (st, _d) = store();
+        let s = sender(account(false, true, true), Arc::clone(&st)).unwrap();
+        let e = s
+            .send(&digest("b1", "attacker@evil.example"))
+            .await
+            .unwrap_err();
+        assert_eq!(e.code(), ErrorCode::AccessDenied);
+        let id = AccountId::new("work").unwrap();
+        assert!(
+            st.lock()
+                .unwrap()
+                .digest_history(&id, 10)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(s.owner_address(), "Me@Work.Example");
+    }
+
+    #[test]
+    fn digest_audit_is_idempotent_rate_limited_and_failed_attempts_are_retryable() {
+        let (st, _d) = store();
+        let mut store = st.lock().unwrap();
+        let acc = AccountId::new("work").unwrap();
+        let claim = |s: &mut BriefStore, brief: &str| {
+            s.claim_digest(
+                brief,
+                &acc,
+                "me@work.example",
+                "2026-11-19T10:00:00Z",
+                "2026-11-18T10:00:00Z",
+                2,
+            )
+            .unwrap()
+        };
+        let DigestClaim::Claimed(first) = claim(&mut store, "b1") else {
+            panic!("first claim must succeed")
+        };
+        assert_eq!(
+            claim(&mut store, "b1"),
+            DigestClaim::AlreadySent,
+            "same brief twice"
+        );
+        store.finish_digest(first, "failed").unwrap();
+        assert!(
+            matches!(claim(&mut store, "b1"), DigestClaim::Claimed(_)),
+            "failed may retry"
+        );
+        assert!(matches!(claim(&mut store, "b2"), DigestClaim::Claimed(_)));
+        assert_eq!(
+            claim(&mut store, "b3"),
+            DigestClaim::RateLimited,
+            "third within the window"
+        );
+        let hist = store.digest_history(&acc, 10).unwrap();
+        assert_eq!(hist.len(), 3);
+        assert!(hist.iter().all(|(to, _, _)| to == "me@work.example"));
+    }
+}
