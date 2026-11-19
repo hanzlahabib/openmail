@@ -8,7 +8,7 @@ Thanks for helping. This guide is the short version; the detail lives in
 ```bash
 git clone <your fork>
 cd openmail-mcp
-rustup show                      # rust-toolchain.toml pins Rust 1.100 (the workspace MSRV)
+rustup show                      # rust-toolchain.toml selects stable; MSRV 1.100 is enforced by Cargo.toml rust-version + CI
 cargo fmt --all -- --check
 cargo clippy -p <crate> --all-targets -- -D warnings
 cargo test -p <crate>
