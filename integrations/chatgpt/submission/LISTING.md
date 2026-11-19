@@ -7,7 +7,7 @@ against the current submission form before using (the form changes).
 |---|---|
 | Name | OpenMail |
 | Tagline | Read, search and brief your own mailbox from ChatGPT. Self-hosted, read-only. |
-| MCP server URL | `https://mail-mcp.example.com/mcp` (reference deployment; every user hosts their own) |
+| MCP server URL | `https://mail-mcp.example.com/mcp` (example host; every user runs their own) |
 | Auth | OAuth 2.1 (built-in single-owner authorization server), PKCE S256, dynamic client registration |
 | Scopes | `mail:read` only |
 | Source / license | https://github.com/hanzlahabib/openmail, MIT |

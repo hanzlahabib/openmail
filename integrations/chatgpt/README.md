@@ -8,14 +8,12 @@ claims below were re-checked against official OpenAI pages on 2026-11-19 (URLs i
 anything not confirmable is marked UNVERIFIED. OpenMail is **not** listed in any ChatGPT directory,
 and ChatGPT-native scheduling is not relied on (see [Briefs](#briefs-and-scheduling)).
 
-## Reference deployment (2026-11-20)
+## Example deployment
 
-A pre-release build runs at `https://mail-mcp.example.com/mcp` on the maintainer's VPS: unprivileged
-`openmail` system user, hardened systemd unit (`docs/deployment/REMOTE.md`), in-process TLS on
-`127.0.0.1:8765`, LiteSpeed reverse proxy with a Let's Encrypt certificate. Static-bearer mode is
-active (usable by Claude/Cursor/curl, **not** by ChatGPT). Verified from the public internet:
-valid TLS, `/healthz` 200, `/mcp` 401 without a token, MCP `initialize` OK with the token.
-The single configured account is a read-only placeholder until its password is set.
+A typical setup (details in `docs/deployment/REMOTE.md`): an unprivileged `openmail` system user, a hardened systemd
+unit, in-process TLS on `127.0.0.1:8765`, and a reverse proxy with a Let's Encrypt certificate publishing
+`https://mail-mcp.example.com/mcp`. Check from outside: valid TLS, `/healthz` 200, `/mcp` 401 without a token.
+Keep the connected mailbox read-only, and prefer a dedicated mailbox over your main one.
 
 **ChatGPT needs OAuth, and OpenMail now ships its own authorization server** (free, self-hosted, no third-party IdP):
 see "Built-in OAuth authorization server" in `docs/deployment/REMOTE.md`. Enable it by replacing the token file with
