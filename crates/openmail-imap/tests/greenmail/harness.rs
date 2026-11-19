@@ -42,12 +42,11 @@ impl Drop for Greenmail {
 }
 
 fn docker_ok() -> bool {
+    // Windows/macOS runners ship a docker CLI but cannot run the Linux GreenMail image.
     Command::new("docker")
-        .args(["info"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
+        .args(["info", "--format", "{{.OSType}}"])
+        .output()
+        .is_ok_and(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "linux")
 }
 
 impl Greenmail {
