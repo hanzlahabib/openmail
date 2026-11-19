@@ -10,18 +10,17 @@ services:
     security_opt:
       - no-new-privileges:true
     # Secrets (bearer token, provider credentials) come from a 0600 file you create; never commit it.
-    env_file: .env
+    env_file:
+      - path: .env
+        required: false
     environment:
       OPENMAIL_LOG: info
     volumes:
       - ./examples/docker/config.toml:/config/config.toml:ro
-    ports:
-      # Loopback only on the host; put a TLS reverse proxy in front for remote access.
-      - "127.0.0.1:8765:8765"
+    # stdio transport: the MCP client attaches with `docker compose run --rm -T openmail-mcp`
+    # (or `docker run -i`). No listener, so no port and no healthcheck. For the http transport add
+    # OPENMAIL_HTTP_TLS_CERT / _TLS_KEY / _AUTH_TOKEN_FILE, `command: [serve, --transport, http, ...]`
+    # and a TCP healthcheck once the http backend is wired.
+    stdin_open: true
     healthcheck:
-      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8765"]
-      interval: 30s
-      timeout: 3s
-      retries: 3
-      start_period: 10s
-    restart: unless-stopped
+      disable: true

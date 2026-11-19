@@ -21,9 +21,10 @@ RUN apt-get update \
 COPY --from=build /out/openmail-mcp /usr/local/bin/openmail-mcp
 USER 10001:10001
 ENV OPENMAIL_CONFIG=/config/config.toml
-EXPOSE 8765
-# bash /dev/tcp avoids shipping curl; a successful TCP connect to the HTTP port.
-HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
-  CMD ["bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8765"]
+# Default transport is stdio: run with `docker run -i` and let the MCP client speak over stdin/stdout.
+# The http transport refuses to start without TLS + a bearer token file (OPENMAIL_HTTP_TLS_CERT,
+# OPENMAIL_HTTP_TLS_KEY, OPENMAIL_HTTP_AUTH_TOKEN_FILE) and its backend is not wired end to end yet,
+# so no port is exposed and there is no TCP healthcheck: a stdio process has no listener to probe.
+HEALTHCHECK NONE
 ENTRYPOINT ["openmail-mcp"]
-CMD ["serve", "--transport", "http", "--bind", "0.0.0.0:8765"]
+CMD ["serve"]

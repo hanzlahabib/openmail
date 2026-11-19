@@ -58,12 +58,19 @@ $arch = switch ($env:PROCESSOR_ARCHITECTURE) {
   'ARM64' { 'aarch64' }
   default { throw "Unsupported architecture: $($env:PROCESSOR_ARCHITECTURE)" }
 }
-$asset = "openmail-mcp-$arch-pc-windows-msvc.zip"
+$suffix = "$arch-pc-windows-msvc.zip"
 $tmp = Join-Path ([IO.Path]::GetTempPath()) ("openmail-" + [guid]::NewGuid())
 New-Item -ItemType Directory -Path $tmp | Out-Null
 try {
-  Invoke-WebRequest -Uri "$base/$asset" -OutFile (Join-Path $tmp $asset)
   Invoke-WebRequest -Uri "$base/SHA-256SUMS" -OutFile (Join-Path $tmp 'SHA-256SUMS')
+
+  # release.yml names archives openmail-mcp-<tag>-<target>.zip; resolve the name from the checksum list.
+  $names = Get-Content (Join-Path $tmp 'SHA-256SUMS') | ForEach-Object { ($_ -split '\s+', 2)[1] -replace '^\*', '' }
+  $asset = $names | Where-Object { $_ -eq "openmail-mcp-$suffix" -or $_ -like "openmail-mcp-*-$suffix" } |
+    Sort-Object -Descending | Select-Object -First 1
+  if (-not $asset) { throw "No openmail-mcp archive for $suffix listed in SHA-256SUMS" }
+  if ($asset -notmatch '^[A-Za-z0-9._-]+$') { throw "Unsafe asset name in SHA-256SUMS: $asset" }
+  Invoke-WebRequest -Uri "$base/$asset" -OutFile (Join-Path $tmp $asset)
 
   $line = Get-Content (Join-Path $tmp 'SHA-256SUMS') |
     Where-Object { ($_ -split '\s+', 2)[1] -replace '^\*', '' -eq $asset } | Select-Object -First 1
