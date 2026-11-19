@@ -667,7 +667,13 @@ async fn connection_limits_are_enforced() {
         t.await.unwrap().unwrap();
     }
     let peak = env2.proxy.stats.peak.load(Ordering::SeqCst);
-    assert!(peak <= 4, "peak live sockets {peak} exceeded global cap 4");
+    // The pool holds its permit until LOGOUT is answered, but the server closes the TCP socket a
+    // moment after that reply, so the proxy can briefly see one closing socket next to the new
+    // one. The pool's own count (below) is the strict bound; the socket view gets that slack.
+    assert!(
+        peak <= 5,
+        "peak live sockets {peak} exceeded global cap 4 (+1 closing)"
+    );
     assert!(b.pool().open_sessions() <= 4);
 }
 
