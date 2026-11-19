@@ -6,6 +6,7 @@ pub mod approval;
 pub mod approval_store;
 pub mod authz;
 pub mod clock;
+pub mod pending;
 pub mod ratelimit;
 pub mod redact;
 pub mod secret;
@@ -17,6 +18,10 @@ pub use approval::{
 pub use approval_store::{ApprovalStore, InMemoryApprovalStore, SqliteApprovalStore};
 pub use authz::{Action, Authorizer, Principal};
 pub use clock::{Clock, SystemClock};
+pub use pending::{
+    DEFAULT_TOKEN_TTL, HumanConfirmation, PendingApproval, PendingApprovals, PendingId,
+    PendingStatus,
+};
 pub use ratelimit::{RateLimitConfig, RateLimiter};
 pub use redact::Redacted;
 pub use secret::EnvKeyringSecretSource;
