@@ -346,7 +346,7 @@ fn is_forward(subject: &str) -> bool {
 }
 
 /// Subject without leading `Re:`/`Fwd:`/`Fw:` markers, lowercased, whitespace-collapsed.
-fn strip_subject(subject: &str) -> String {
+pub(crate) fn strip_subject(subject: &str) -> String {
     let mut s = subject.trim();
     loop {
         let lower = s.to_ascii_lowercase();

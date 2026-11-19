@@ -71,6 +71,23 @@ pub struct Brief {
     pub highlights: Vec<BriefItem>,
     pub actions: Vec<ActionItem>,
     pub follow_ups: Vec<FollowUp>,
+    /// Model-written overview; present only when the owner's `AiPolicy` enabled it. Always
+    /// `Provenance::Ai` and never authoritative.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ai_summary: Option<AiSummary>,
+    /// Limits of this run that are not an account failure (e.g. no Sent folder found, so
+    /// follow-ups were not checked for that account).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AiSummary {
+    /// Provider output about mail text: untrusted.
+    pub text: Untrusted<String>,
+    pub provenance: Provenance,
+    /// How many messages the provider was shown.
+    pub messages: usize,
 }
 
 #[cfg(test)]
