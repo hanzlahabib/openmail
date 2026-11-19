@@ -23,3 +23,6 @@ briefs (41-47), ChatGPT (48-49), CI/packaging/docs (31-40), perf/e2e (29, 50). R
 - wave1-imap: still in progress (not merged).
 - wave2 (30 agents, ONE shared worktree `wave2`, strict file ownership, per-agent CARGO_TARGET_DIR): committed so far T01-T05, T07-T12, T15, T18, T19, T21, T24, T25. Not yet verified or merged. T06, T13, T14, T16, T17, T20, T22, T23, T26-T30 still running or restarted.
 - Orchestration incidents: power outage (recovered from WIP commits); one sweep exited five just-started agents because the DONE-marker grep matched the prompt text — they were restarted fresh (T23, T26, T27, T28, T30).
+
+## Final status of this session (verified)
+All wave-1 (imap, security, mcp, smtp) and wave-2 (T01-T30) agents committed work, merged into `integration`. Wave 3 (T31 authz wiring, T32 approval seal, T33 mime hygiene) and an E2E agent committed; full workspace clippy/test green with real GreenMail. Roles with no dedicated agent: 10 (provider compat beyond docs), 27-28/29 are covered inside crate tests, 30 was one read-only review by a separate agent. See docs/RELEASE_READINESS.md for what is NOT done.
