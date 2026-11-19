@@ -25,6 +25,8 @@ thiserror = "2"
 anyhow = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "signal"] }
 tracing = "0.1"
+rmcp = { version = "3.11", features = ["server", "macros", "schemars", "transport-io"] }
+schemars = "1"
 secrecy = "0.10"
 base64 = "0.22"
 sha2 = "0.10"
