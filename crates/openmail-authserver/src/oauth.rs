@@ -1,7 +1,7 @@
 //! HTTP surface: metadata, JWKS, registration, authorize (consent) and token endpoints.
 use std::sync::Arc;
 
-use axum::extract::{DefaultBodyLimit, Query, State};
+use axum::extract::{DefaultBodyLimit, Query, RawForm, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
@@ -276,6 +276,8 @@ async fn authorize_get(State(s): Srv, Query(q): Query<AuthorizeQuery>) -> Respon
         return err_redirect(&s, redirect_uri, state, "invalid_target");
     }
     let granted: Vec<String> = match q.scope.as_deref().filter(|x| !x.trim().is_empty()) {
+        // No scope requested: pre-tick read-only access (when offered), never everything.
+        None if s.cfg.scopes.iter().any(|a| a == "mail:read") => vec!["mail:read".to_owned()],
         None => s.cfg.scopes.clone(),
         Some(req) => {
             let g: Vec<String> = req
@@ -309,18 +311,44 @@ async fn authorize_get(State(s): Srv, Query(q): Query<AuthorizeQuery>) -> Respon
     );
     page(
         StatusCode::OK,
-        pages::consent(&tx, &client.name, &granted, None),
+        pages::consent(&tx, &client.name, &s.cfg.scopes, &granted, None),
     )
 }
 
-#[derive(Deserialize)]
+/// The consent form. `scope` repeats (one per ticked box), which serde's `Form` cannot collect,
+/// so it is parsed by hand.
 struct AuthorizeForm {
     tx: String,
     password: Option<String>,
     decision: String,
+    scopes: Vec<String>,
 }
 
-async fn authorize_post(State(s): Srv, Form(f): Form<AuthorizeForm>) -> Response {
+impl AuthorizeForm {
+    fn parse(raw: &[u8]) -> Option<Self> {
+        let (mut tx, mut password, mut decision, mut scopes) = (None, None, None, Vec::new());
+        for (k, v) in url::form_urlencoded::parse(raw) {
+            match k.as_ref() {
+                "tx" => tx = Some(v.into_owned()),
+                "password" => password = Some(v.into_owned()),
+                "decision" => decision = Some(v.into_owned()),
+                "scope" => scopes.push(v.into_owned()),
+                _ => {}
+            }
+        }
+        Some(Self {
+            tx: tx?,
+            password,
+            decision: decision?,
+            scopes,
+        })
+    }
+}
+
+async fn authorize_post(State(s): Srv, RawForm(raw): RawForm) -> Response {
+    let Some(f) = AuthorizeForm::parse(&raw) else {
+        return page(StatusCode::BAD_REQUEST, pages::error("malformed request"));
+    };
     let t = now();
     let snapshot = {
         let p = lock(&s.pending);
@@ -339,7 +367,7 @@ async fn authorize_post(State(s): Srv, Form(f): Form<AuthorizeForm>) -> Response
             pages::error("this request expired"),
         );
     };
-    if f.decision != "allow" {
+    if !matches!(f.decision.as_str(), "allow" | "allow_all") {
         lock(&s.pending).remove(&f.tx);
         return err_redirect(&s, &redirect_uri, state.as_deref(), "access_denied");
     }
@@ -349,10 +377,31 @@ async fn authorize_post(State(s): Srv, Form(f): Form<AuthorizeForm>) -> Response
         .ok()
         .flatten()
         .map_or_else(|| "Application".to_owned(), |c| c.name);
-    let scopes: Vec<String> = scope.split(' ').map(str::to_owned).collect();
+    let checked: Vec<String> = scope.split(' ').map(str::to_owned).collect();
     let retry = |status: StatusCode, msg: &str| {
-        page(status, pages::consent(&f.tx, &name, &scopes, Some(msg)))
+        page(
+            status,
+            pages::consent(&f.tx, &name, &s.cfg.scopes, &checked, Some(msg)),
+        )
     };
+    // What the owner granted: everything, the ticked boxes, or (no boxes sent) what was requested.
+    // Only scopes this server defines can ever appear.
+    let granted_scope = if f.decision == "allow_all" {
+        s.cfg.scopes.join(" ")
+    } else if f.scopes.is_empty() {
+        scope.clone()
+    } else {
+        s.cfg
+            .scopes
+            .iter()
+            .filter(|a| f.scopes.contains(a))
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    if granted_scope.is_empty() {
+        return retry(StatusCode::BAD_REQUEST, "Tick at least one permission.");
+    }
     if s.login_locked() {
         return retry(
             StatusCode::TOO_MANY_REQUESTS,
@@ -381,7 +430,7 @@ async fn authorize_post(State(s): Srv, Form(f): Form<AuthorizeForm>) -> Response
             client_id: pending.client_id,
             redirect_uri: pending.redirect_uri.clone(),
             challenge: pending.challenge,
-            scope: pending.scope,
+            scope: granted_scope,
             expires: now() + AuthServer::code_ttl(),
         },
     );

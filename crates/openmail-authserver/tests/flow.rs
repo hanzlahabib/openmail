@@ -38,7 +38,11 @@ fn env() -> Env {
         resource: RESOURCE.into(),
         owner_password_hash: hash_password(PASSWORD).unwrap(),
         state_dir: dir.path().to_owned(),
-        scopes: vec!["mail:read".into()],
+        scopes: vec![
+            "mail:read".into(),
+            "mail:organize".into(),
+            "mail:send".into(),
+        ],
         allowed_redirect_hosts: vec!["chatgpt.com".into()],
         access_ttl: Duration::from_secs(3600),
         refresh_ttl: Duration::from_secs(86_400),
@@ -352,7 +356,7 @@ async fn registration_and_authorization_reject_unsafe_requests() {
             ),
             "invalid_target",
         ),
-        (format!("{base}&scope=mail:send"), "invalid_scope"),
+        (format!("{base}&scope=mail:delete"), "invalid_scope"),
         (
             base.replace("response_type=code", "response_type=token"),
             "unsupported_response_type",
@@ -454,4 +458,90 @@ async fn signing_key_persists_across_restarts_and_weak_passwords_are_refused() {
             .mode();
         assert_eq!(mode & 0o077, 0, "signing key must be owner-only");
     }
+}
+
+async fn granted_scope(e: &Env, extra: &str) -> (StatusCode, Option<String>) {
+    let (_, reg) = register(&e.app, REDIRECT).await;
+    let cid = reg["client_id"].as_str().unwrap().to_owned();
+    let tx = open_consent(&e.app, &cid).await;
+    let (st, h, _) = send(
+        &e.app,
+        form(
+            "/authorize",
+            &format!("tx={tx}&password={}&{extra}", urlencode(PASSWORD)),
+        ),
+    )
+    .await;
+    if st != StatusCode::FOUND {
+        return (st, None);
+    }
+    let code = location(&h)
+        .query_pairs()
+        .find(|(k, _)| k == "code")
+        .unwrap()
+        .1
+        .into_owned();
+    let (_, tok) = token(
+        &e.app,
+        &format!(
+            "grant_type=authorization_code&client_id={cid}&code={code}&redirect_uri={}&code_verifier={VERIFIER}",
+            urlencode(REDIRECT)
+        ),
+    )
+    .await;
+    (st, tok["scope"].as_str().map(str::to_owned))
+}
+
+#[tokio::test]
+async fn the_owner_chooses_the_permissions_and_can_approve_all() {
+    let e = env();
+    // The page offers every scope; only read-only is pre-ticked when the client asked for none.
+    let (_, reg) = register(&e.app, REDIRECT).await;
+    let cid = reg["client_id"].as_str().unwrap();
+    let (_, _, html) = send(
+        &e.app,
+        Request::get(authorize_url(cid, ""))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    for s in ["mail:read", "mail:organize", "mail:send"] {
+        assert!(html.contains(&format!("value=\"{s}\"")), "{s} not offered");
+    }
+    assert!(html.contains("value=\"mail:read\" checked"));
+    assert!(!html.contains("value=\"mail:send\" checked"));
+    assert!(html.contains("Approve ALL permissions"));
+
+    // No boxes sent: what was requested (read-only).
+    assert_eq!(
+        granted_scope(&e, "decision=allow").await.1.as_deref(),
+        Some("mail:read")
+    );
+    // A chosen subset.
+    assert_eq!(
+        granted_scope(&e, "decision=allow&scope=mail:read&scope=mail:organize")
+            .await
+            .1
+            .as_deref(),
+        Some("mail:read mail:organize")
+    );
+    // Approve ALL grants every scope this server defines, and only those.
+    assert_eq!(
+        granted_scope(&e, "decision=allow_all").await.1.as_deref(),
+        Some("mail:read mail:organize mail:send")
+    );
+    // Scopes the server does not define are dropped; nothing valid ticked is refused.
+    assert_eq!(
+        granted_scope(&e, "decision=allow&scope=mail:read&scope=mail:delete")
+            .await
+            .1
+            .as_deref(),
+        Some("mail:read")
+    );
+    assert_eq!(
+        granted_scope(&e, "decision=allow&scope=mail:delete")
+            .await
+            .0,
+        StatusCode::BAD_REQUEST
+    );
 }
