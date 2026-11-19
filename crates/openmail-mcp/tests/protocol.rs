@@ -368,7 +368,7 @@ async fn errors_are_structured() {
     let r = msg_ref("work", 1, UID_VALIDITY).encode();
     assert_eq!(
         err_code(&c, "mail_list_folders", json!({"account": "ghost"})).await,
-        "ACCOUNT_NOT_FOUND"
+        "ACCESS_DENIED"
     );
     assert_eq!(
         err_code(
@@ -377,7 +377,7 @@ async fn errors_are_structured() {
             json!({"account": "ghost", "folder": "INBOX"})
         )
         .await,
-        "ACCOUNT_NOT_FOUND"
+        "ACCESS_DENIED"
     );
     assert_eq!(
         err_code(&c, "mail_list_folders", json!({"account": "Bad Id!"})).await,
@@ -387,7 +387,7 @@ async fn errors_are_structured() {
     let foreign = msg_ref("ghost", 1, UID_VALIDITY).encode();
     assert_eq!(
         err_code(&c, "mail_get_message", json!({"message_ref": foreign})).await,
-        "ACCOUNT_NOT_FOUND"
+        "ACCESS_DENIED"
     );
     assert_eq!(
         err_code(
