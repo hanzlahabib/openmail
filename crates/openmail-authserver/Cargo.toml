@@ -1,0 +1,34 @@
+[package]
+name = "openmail-authserver"
+description = "OpenMail MCP: minimal single-owner OAuth 2.1 authorization server (PKCE, dynamic client registration, ES256 JWTs)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio", "json", "form", "query"] }
+argon2 = "0.6"
+base64.workspace = true
+getrandom.workspace = true
+jsonwebtoken = { version = "12", default-features = false, features = ["rust_crypto", "use_pem"] }
+# ring backend: the TLS stack already uses ring, so no second crypto provider is pulled in.
+rcgen = { version = "0.14", default-features = false, features = ["pem", "ring"] }
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+subtle = "2"
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+url = "2.5.8"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+tempfile = "3"
+http-body-util = "0.1"
+
+[lints]
+workspace = true

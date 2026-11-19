@@ -49,6 +49,22 @@ pub enum Command {
     Brief(BriefArgs),
     /// Out-of-band send approvals (never reachable from an MCP tool).
     Approvals(ApprovalsArgs),
+    /// Built-in OAuth authorization server helpers.
+    Oauth(OauthArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct OauthArgs {
+    #[command(subcommand)]
+    pub action: OauthAction,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum OauthAction {
+    /// Read the owner password from stdin and print its Argon2id hash (for
+    /// OPENMAIL_OAUTH_OWNER_PASSWORD_HASH_FILE). Example:
+    /// `read -rs P; printf %s "$P" | openmail-mcp oauth hash-password > owner.hash`
+    HashPassword,
 }
 
 #[derive(Debug, Args)]
@@ -201,6 +217,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)] // POSIX-style absolute paths in the fixtures
     fn xdg_then_home_then_relative() {
         assert_eq!(
             resolve_config_with(None, Some("/xdg".into()), Some("/h".into())),
