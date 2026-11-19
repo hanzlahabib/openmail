@@ -114,7 +114,7 @@ sha256sum target/release/openmail*
 - `--remap-path-prefix` strips the builder's absolute paths from binaries and panic
   messages. Use the same `$PWD` (e.g. a fixed `/build` checkout) when comparing hashes.
 - `SOURCE_DATE_EPOCH` pins embedded timestamps for any build script that honours it.
-- The toolchain is pinned by `rust-toolchain.toml`; build on the same target triple.
+- Use the same compiler version (record `rustc -Vv`) and target triple; `rust-toolchain.toml` only selects stable.
 - Build twice in clean checkouts and compare `sha256sum`; a mismatch is a release blocker.
   Reproducibility was **not** verified in this run (no release build performed).
 

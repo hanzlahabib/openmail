@@ -1,7 +1,7 @@
 # Setup
 
 ## Toolchain
-`rust-toolchain.toml` pins channel `1.100` with `rustfmt` and `clippy`. With rustup installed, entering the repo selects it automatically. Workspace: edition 2024, `rust-version = "1.100"`, resolver 3.
+`rust-toolchain.toml` selects the `stable` channel with `rustfmt` and `clippy`. With rustup installed, entering the repo selects it automatically. Workspace: edition 2024, `rust-version = "1.100"`, resolver 3.
 
 ## Common commands
 ```bash

@@ -1,5 +1,5 @@
-# Pinned to the workspace MSRV (Cargo.toml rust-version) so local builds match CI.
+# Selects the installed stable toolchain with the components CI uses. The MSRV floor is enforced by the CI MSRV job and Cargo.toml `rust-version`; a numeric pin here made rustup install a duplicate toolchain per machine.
 [toolchain]
-channel = "1.100"
+channel = "stable"
 components = ["rustfmt", "clippy"]
 profile = "minimal"
