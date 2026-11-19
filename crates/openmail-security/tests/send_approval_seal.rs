@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! End-to-end checks that an approval minted for one exact message is the only way
 //! to obtain an `ApprovalProof`, and that it is single-use, bound and persistent.
 use std::sync::Arc;
