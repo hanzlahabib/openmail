@@ -1,6 +1,6 @@
 //! A scriptable, in-process SMTP(S) server for tests. It binds to 127.0.0.1 only and
 //! records everything it receives so tests can assert on what actually crossed the wire.
-#![allow(dead_code)]
+#![allow(dead_code, clippy::unwrap_used, clippy::expect_used)]
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -10,8 +10,8 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWrite
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Notify;
 use tokio_rustls::TlsAcceptor;
-use tokio_rustls::rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
 use tokio_rustls::rustls::ServerConfig;
+use tokio_rustls::rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum TlsKind {
@@ -41,7 +41,12 @@ pub struct Script {
 
 impl Script {
     pub fn new(tls: TlsKind) -> Self {
-        Self { tls, auth: Some(("me@example.com".into(), "s3cret".into())), reject_rcpt: false, after_data: AfterData::Accept }
+        Self {
+            tls,
+            auth: Some(("me@example.com".into(), "s3cret".into())),
+            reject_rcpt: false,
+            after_data: AfterData::Accept,
+        }
     }
 }
 
@@ -99,13 +104,20 @@ pub async fn start(script: Script) -> Server {
     let st = Arc::clone(&state);
     let task = tokio::spawn(async move {
         loop {
-            let Ok((tcp, _)) = listener.accept().await else { return };
+            let Ok((tcp, _)) = listener.accept().await else {
+                return;
+            };
             st.connections.fetch_add(1, Ordering::SeqCst);
             let (script, st, acceptor) = (script.clone(), Arc::clone(&st), acceptor.clone());
             tokio::spawn(async move { connection(tcp, script, st, acceptor).await });
         }
     });
-    Server { port, state, root_pem, task }
+    Server {
+        port,
+        state,
+        root_pem,
+        task,
+    }
 }
 
 enum Next<S> {
@@ -124,7 +136,8 @@ async fn connection(tcp: TcpStream, script: Script, st: Arc<State>, acceptor: Tl
             let _ = session(BufReader::new(tcp), false, true, &script, &st).await;
         }
         TlsKind::StartTls => {
-            if let Some(Next::Upgrade(tcp)) = session(BufReader::new(tcp), false, true, &script, &st).await
+            if let Some(Next::Upgrade(tcp)) =
+                session(BufReader::new(tcp), false, true, &script, &st).await
                 && let Ok(tls) = acceptor.accept(tcp).await
             {
                 let _ = session(BufReader::new(tls), true, false, &script, &st).await;
@@ -138,7 +151,13 @@ async fn reply<S: AsyncRead + AsyncWrite + Unpin>(s: &mut BufReader<S>, text: &s
     s.get_mut().flush().await.ok()
 }
 
-async fn session<S: AsyncRead + AsyncWrite + Unpin>(mut s: BufReader<S>, secure: bool, greet: bool, script: &Script, st: &State) -> Option<Next<S>> {
+async fn session<S: AsyncRead + AsyncWrite + Unpin>(
+    mut s: BufReader<S>,
+    secure: bool,
+    greet: bool,
+    script: &Script,
+    st: &State,
+) -> Option<Next<S>> {
     if greet {
         reply(&mut s, "220 localhost ready\r\n").await?;
     }
@@ -152,7 +171,9 @@ async fn session<S: AsyncRead + AsyncWrite + Unpin>(mut s: BufReader<S>, secure:
         let cmd = line.trim_end().to_owned();
         let upper = cmd.to_ascii_uppercase();
         if upper.starts_with("EHLO") || upper.starts_with("HELO") {
-            let mut r = String::from("250-localhost\r\n250-8BITMIME\r\n250-SMTPUTF8\r\n250-SIZE 52428800\r\n");
+            let mut r = String::from(
+                "250-localhost\r\n250-8BITMIME\r\n250-SMTPUTF8\r\n250-SIZE 52428800\r\n",
+            );
             if !secure && script.tls == TlsKind::StartTls {
                 r.push_str("250-STARTTLS\r\n");
             }
@@ -189,14 +210,26 @@ async fn session<S: AsyncRead + AsyncWrite + Unpin>(mut s: BufReader<S>, secure:
                 reply(&mut s, "530 5.7.0 auth required\r\n").await?;
                 continue;
             }
-            from = cmd[10..].split_whitespace().next().unwrap_or("").trim_matches(['<', '>']).to_owned();
+            from = cmd[10..]
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .trim_matches(['<', '>'])
+                .to_owned();
             rcpts.clear();
             reply(&mut s, "250 ok\r\n").await?;
         } else if upper.starts_with("RCPT TO") {
             if script.reject_rcpt {
                 reply(&mut s, "550 5.1.1 no such user\r\n").await?;
             } else {
-                rcpts.push(cmd[8..].split_whitespace().next().unwrap_or("").trim_matches(['<', '>']).to_owned());
+                rcpts.push(
+                    cmd[8..]
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or("")
+                        .trim_matches(['<', '>'])
+                        .to_owned(),
+                );
                 reply(&mut s, "250 ok\r\n").await?;
             }
         } else if upper == "DATA" {
@@ -213,7 +246,11 @@ async fn session<S: AsyncRead + AsyncWrite + Unpin>(mut s: BufReader<S>, secure:
                 data.push_str(&l);
             }
             if let Ok(mut m) = st.messages.lock() {
-                m.push(Received { from: from.clone(), rcpts: rcpts.clone(), data });
+                m.push(Received {
+                    from: from.clone(),
+                    rcpts: rcpts.clone(),
+                    data,
+                });
             }
             st.data_received.notify_waiters();
             match script.after_data {

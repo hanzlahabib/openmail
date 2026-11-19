@@ -105,10 +105,22 @@ pub trait OutboxStore: Send + Sync {
     /// Durably record that DATA is about to start. Must complete before the DATA command is sent.
     async fn mark_data_started(&self, account: &AccountId, key: &str) -> Result<()>;
     /// Record the final state of an attempt (`Accepted`, `Rejected` or `Uncertain`).
-    async fn finish(&self, account: &AccountId, key: &str, state: OutboxState, detail: Option<&str>) -> Result<()>;
+    async fn finish(
+        &self,
+        account: &AccountId,
+        key: &str,
+        state: OutboxState,
+        detail: Option<&str>,
+    ) -> Result<()>;
     async fn get(&self, account: &AccountId, key: &str) -> Result<Option<OutboxRecord>>;
     /// Operator recovery: only valid while the record is `Uncertain`.
-    async fn resolve_uncertain(&self, account: &AccountId, key: &str, outcome: Outcome, note: &str) -> Result<OutboxRecord>;
+    async fn resolve_uncertain(
+        &self,
+        account: &AccountId,
+        key: &str,
+        outcome: Outcome,
+        note: &str,
+    ) -> Result<OutboxRecord>;
     /// Most recent first.
     async fn audit_entries(&self, account: &AccountId, limit: u32) -> Result<Vec<AuditEntry>>;
 }

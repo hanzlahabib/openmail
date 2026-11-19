@@ -43,7 +43,10 @@ pub struct ApprovalProof {
 
 impl ApprovalProof {
     pub fn new(content_hash: ContentHash, token: impl Into<String>) -> Self {
-        Self { content_hash, token: token.into() }
+        Self {
+            content_hash,
+            token: token.into(),
+        }
     }
 
     pub(crate) fn content_hash(&self) -> &ContentHash {

@@ -10,7 +10,9 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
-use crate::outbox::{AuditEntry, Begin, NewAttempt, Outcome, OutboxRecord, OutboxState, OutboxStore};
+use crate::outbox::{
+    AuditEntry, Begin, NewAttempt, OutboxRecord, OutboxState, OutboxStore, Outcome,
+};
 
 const SCHEMA_VERSION: i64 = 1;
 /// Wait this long for a competing writer (another process on the same file) before failing.
@@ -54,7 +56,8 @@ impl SqliteOutbox {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(internal)?;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+                .map_err(internal)?;
         }
         Self::init(conn)
     }
@@ -65,17 +68,27 @@ impl SqliteOutbox {
 
     fn init(conn: Connection) -> Result<Self> {
         conn.busy_timeout(BUSY_TIMEOUT).map_err(internal)?;
-        conn.pragma_update(None, "journal_mode", "WAL").map_err(internal)?;
-        conn.pragma_update(None, "synchronous", "FULL").map_err(internal)?;
-        let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0)).map_err(internal)?;
+        conn.pragma_update(None, "journal_mode", "WAL")
+            .map_err(internal)?;
+        conn.pragma_update(None, "synchronous", "FULL")
+            .map_err(internal)?;
+        let version: i64 = conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .map_err(internal)?;
         if version > SCHEMA_VERSION {
-            return Err(Error::new(ErrorCode::ConfigInvalid, "outbox database was written by a newer version"));
+            return Err(Error::new(
+                ErrorCode::ConfigInvalid,
+                "outbox database was written by a newer version",
+            ));
         }
         if version == 0 {
             conn.execute_batch(SCHEMA).map_err(internal)?;
-            conn.pragma_update(None, "user_version", SCHEMA_VERSION).map_err(internal)?;
+            conn.pragma_update(None, "user_version", SCHEMA_VERSION)
+                .map_err(internal)?;
         }
-        let store = Self { conn: Arc::new(Mutex::new(conn)) };
+        let store = Self {
+            conn: Arc::new(Mutex::new(conn)),
+        };
         store.recover_orphans()?;
         Ok(store)
     }
@@ -85,19 +98,34 @@ impl SqliteOutbox {
         let tx = conn.transaction().map_err(internal)?;
         let orphans: Vec<(String, String)> = {
             let mut st = tx.prepare("SELECT account, idempotency_key FROM outbox WHERE state='pending' AND data_started=1").map_err(internal)?;
-            st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map_err(internal)?.collect::<std::result::Result<_, _>>().map_err(internal)?
+            st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                .map_err(internal)?
+                .collect::<std::result::Result<_, _>>()
+                .map_err(internal)?
         };
         for (account, key) in &orphans {
-            set_state(&tx, account, key, OutboxState::Uncertain, Some("process ended after DATA began"))?;
+            set_state(
+                &tx,
+                account,
+                key,
+                OutboxState::Uncertain,
+                Some("process ended after DATA began"),
+            )?;
         }
         tx.commit().map_err(internal)?;
         if !orphans.is_empty() {
-            tracing::warn!(count = orphans.len(), "recovered in-flight sends as Uncertain");
+            tracing::warn!(
+                count = orphans.len(),
+                "recovered in-flight sends as Uncertain"
+            );
         }
         Ok(())
     }
 
-    async fn run<T: Send + 'static>(&self, f: impl FnOnce(&mut Connection) -> Result<T> + Send + 'static) -> Result<T> {
+    async fn run<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&mut Connection) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
         let conn = Arc::clone(&self.conn);
         tokio::task::spawn_blocking(move || {
             let mut guard = conn.lock().map_err(|_| internal("poisoned lock"))?;
@@ -108,35 +136,71 @@ impl SqliteOutbox {
     }
 }
 
-fn read_record(r: &rusqlite::Row<'_>) -> rusqlite::Result<(String, String, String, String, u32, String, bool, u32, Option<String>, i64)> {
-    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get::<_, i64>(6)? != 0, r.get(7)?, r.get(8)?, r.get(9)?))
+/// Raw row in `SELECT` column order, converted to `OutboxRecord` by `fetch`.
+struct Row {
+    account: String,
+    key: String,
+    hash: String,
+    message_id: String,
+    recipients: u32,
+    state: String,
+    data_started: bool,
+    attempts: u32,
+    detail: Option<String>,
+    updated_unix: i64,
+}
+
+fn read_record(r: &rusqlite::Row<'_>) -> rusqlite::Result<Row> {
+    Ok(Row {
+        account: r.get(0)?,
+        key: r.get(1)?,
+        hash: r.get(2)?,
+        message_id: r.get(3)?,
+        recipients: r.get(4)?,
+        state: r.get(5)?,
+        data_started: r.get::<_, i64>(6)? != 0,
+        attempts: r.get(7)?,
+        detail: r.get(8)?,
+        updated_unix: r.get(9)?,
+    })
 }
 
 const SELECT: &str = "SELECT account, idempotency_key, content_hash, message_id, recipients, state, data_started, attempts, detail, updated_unix FROM outbox";
 
 fn fetch(tx: &Transaction<'_>, account: &str, key: &str) -> Result<Option<OutboxRecord>> {
     let row = tx
-        .query_row(&format!("{SELECT} WHERE account=?1 AND idempotency_key=?2"), params![account, key], read_record)
+        .query_row(
+            &format!("{SELECT} WHERE account=?1 AND idempotency_key=?2"),
+            params![account, key],
+            read_record,
+        )
         .optional()
         .map_err(internal)?;
-    row.map(|(a, k, h, m, n, s, d, at, det, up)| {
+    row.map(|r| {
         Ok(OutboxRecord {
-            account: AccountId::new(a)?,
-            idempotency_key: k,
-            content_hash: h,
-            message_id: m,
-            recipients: n,
-            state: OutboxState::parse(&s).ok_or_else(|| internal("unknown state in database"))?,
-            data_started: d,
-            attempts: at,
-            detail: det,
-            updated_unix: up,
+            account: AccountId::new(r.account)?,
+            idempotency_key: r.key,
+            content_hash: r.hash,
+            message_id: r.message_id,
+            recipients: r.recipients,
+            state: OutboxState::parse(&r.state)
+                .ok_or_else(|| internal("unknown state in database"))?,
+            data_started: r.data_started,
+            attempts: r.attempts,
+            detail: r.detail,
+            updated_unix: r.updated_unix,
         })
     })
     .transpose()
 }
 
-fn set_state(tx: &Transaction<'_>, account: &str, key: &str, state: OutboxState, detail: Option<&str>) -> Result<()> {
+fn set_state(
+    tx: &Transaction<'_>,
+    account: &str,
+    key: &str,
+    state: OutboxState,
+    detail: Option<&str>,
+) -> Result<()> {
     let (unix, ts) = now();
     tx.execute(
         "UPDATE outbox SET state=?3, detail=?4, updated_unix=?5 WHERE account=?1 AND idempotency_key=?2",
@@ -227,11 +291,24 @@ impl OutboxStore for SqliteOutbox {
         .await
     }
 
-    async fn finish(&self, account: &AccountId, key: &str, state: OutboxState, detail: Option<&str>) -> Result<()> {
+    async fn finish(
+        &self,
+        account: &AccountId,
+        key: &str,
+        state: OutboxState,
+        detail: Option<&str>,
+    ) -> Result<()> {
         if state == OutboxState::Pending {
-            return Err(Error::new(ErrorCode::Internal, "finish() requires a final state"));
+            return Err(Error::new(
+                ErrorCode::Internal,
+                "finish() requires a final state",
+            ));
         }
-        let (account, key, detail) = (account.to_string(), key.to_owned(), detail.map(str::to_owned));
+        let (account, key, detail) = (
+            account.to_string(),
+            key.to_owned(),
+            detail.map(str::to_owned),
+        );
         self.run(move |conn| {
             let tx = conn.transaction().map_err(internal)?;
             set_state(&tx, &account, &key, state, detail.as_deref())?;
@@ -249,7 +326,13 @@ impl OutboxStore for SqliteOutbox {
         .await
     }
 
-    async fn resolve_uncertain(&self, account: &AccountId, key: &str, outcome: Outcome, note: &str) -> Result<OutboxRecord> {
+    async fn resolve_uncertain(
+        &self,
+        account: &AccountId,
+        key: &str,
+        outcome: Outcome,
+        note: &str,
+    ) -> Result<OutboxRecord> {
         let (account, key, note) = (account.to_string(), key.to_owned(), note.to_owned());
         self.run(move |conn| {
             let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(internal)?;
@@ -297,5 +380,95 @@ impl OutboxStore for SqliteOutbox {
             .collect()
         })
         .await
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    fn attempt(key: &str, hash: &str) -> NewAttempt {
+        NewAttempt {
+            account: AccountId::new("a").unwrap(),
+            idempotency_key: key.into(),
+            content_hash: hash.into(),
+            message_id: "<m@x>".into(),
+            recipients: 3,
+            approval_token: "t".into(),
+        }
+    }
+
+    const LEASE: Duration = Duration::from_secs(900);
+
+    #[tokio::test]
+    async fn pending_within_lease_is_in_progress_but_stale_pending_is_retryable() {
+        let s = SqliteOutbox::open_in_memory().unwrap();
+        assert!(matches!(
+            s.begin(attempt("k", "h"), LEASE).await.unwrap(),
+            Begin::Started(_)
+        ));
+        assert!(
+            matches!(s.begin(attempt("k", "h"), LEASE).await.unwrap(), Begin::Existing(r) if r.state == OutboxState::Pending)
+        );
+        // Zero lease: the earlier attempt never reached DATA, so retrying is safe.
+        let Begin::Started(r) = s.begin(attempt("k", "h"), Duration::ZERO).await.unwrap() else {
+            panic!("expected retry")
+        };
+        assert_eq!(r.attempts, 2);
+    }
+
+    #[tokio::test]
+    async fn pending_with_data_started_becomes_uncertain_on_next_begin() {
+        let s = SqliteOutbox::open_in_memory().unwrap();
+        let acc = AccountId::new("a").unwrap();
+        s.begin(attempt("k", "h"), LEASE).await.unwrap();
+        s.mark_data_started(&acc, "k").await.unwrap();
+        let Begin::Existing(r) = s.begin(attempt("k", "h"), Duration::ZERO).await.unwrap() else {
+            panic!("must not restart")
+        };
+        assert_eq!(r.state, OutboxState::Uncertain);
+    }
+
+    #[tokio::test]
+    async fn resolve_only_applies_to_uncertain_and_hash_is_enforced() {
+        let s = SqliteOutbox::open_in_memory().unwrap();
+        let acc = AccountId::new("a").unwrap();
+        s.begin(attempt("k", "h"), LEASE).await.unwrap();
+        assert_eq!(
+            s.resolve_uncertain(&acc, "k", Outcome::Delivered, "n")
+                .await
+                .unwrap_err()
+                .code(),
+            ErrorCode::InvalidInput
+        );
+        assert_eq!(
+            s.begin(attempt("k", "other"), LEASE)
+                .await
+                .unwrap_err()
+                .code(),
+            ErrorCode::InvalidInput
+        );
+        s.finish(&acc, "k", OutboxState::Uncertain, Some("x"))
+            .await
+            .unwrap();
+        let r = s
+            .resolve_uncertain(&acc, "k", Outcome::Delivered, "seen in Sent")
+            .await
+            .unwrap();
+        assert_eq!(r.state, OutboxState::Accepted);
+        assert!(
+            s.resolve_uncertain(&acc, "k", Outcome::NotDelivered, "n")
+                .await
+                .is_err(),
+            "resolved records are final"
+        );
+        assert_eq!(
+            s.resolve_uncertain(&acc, "nope", Outcome::Delivered, "n")
+                .await
+                .unwrap_err()
+                .code(),
+            ErrorCode::InvalidInput
+        );
     }
 }

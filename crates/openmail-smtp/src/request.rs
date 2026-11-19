@@ -96,14 +96,22 @@ impl SendRequest {
 
     pub fn validate(&self, limits: &SmtpLimits) -> Result<()> {
         let key = &self.idempotency_key;
-        if key.is_empty() || key.len() > MAX_IDEMPOTENCY_KEY_LEN || !key.bytes().all(|b| b.is_ascii_graphic()) {
-            return Err(invalid("idempotency_key must be 1-128 printable ASCII characters"));
+        if key.is_empty()
+            || key.len() > MAX_IDEMPOTENCY_KEY_LEN
+            || !key.bytes().all(|b| b.is_ascii_graphic())
+        {
+            return Err(invalid(
+                "idempotency_key must be 1-128 printable ASCII characters",
+            ));
         }
         if self.to.is_empty() && self.cc.is_empty() && self.bcc.is_empty() {
             return Err(invalid("at least one recipient is required"));
         }
         if self.recipient_count() > limits.max_recipients {
-            return Err(Error::new(ErrorCode::LimitExceeded, format!("more than {} recipients", limits.max_recipients)));
+            return Err(Error::new(
+                ErrorCode::LimitExceeded,
+                format!("more than {} recipients", limits.max_recipients),
+            ));
         }
         if has_ctl(&self.subject) {
             return Err(invalid("subject must not contain line breaks"));
@@ -111,17 +119,22 @@ impl SendRequest {
         if self.text.is_none() && self.html.is_none() {
             return Err(invalid("message needs a text or html body"));
         }
-        for a in self.from_and_recipients() {
+        for a in self.all_addresses() {
             if has_ctl(&a.email) || a.name.as_deref().is_some_and(has_ctl) {
-                return Err(invalid("addresses and display names must not contain line breaks"));
+                return Err(invalid(
+                    "addresses and display names must not contain line breaks",
+                ));
             }
         }
         for id in self.in_reply_to.iter().chain(&self.references) {
             if !is_message_id(id) {
-                return Err(invalid("In-Reply-To/References entries must look like <id@host>"));
+                return Err(invalid(
+                    "In-Reply-To/References entries must look like <id@host>",
+                ));
             }
         }
-        let mut total = self.text.as_ref().map_or(0, String::len) + self.html.as_ref().map_or(0, String::len);
+        let mut total =
+            self.text.as_ref().map_or(0, String::len) + self.html.as_ref().map_or(0, String::len);
         for a in &self.attachments {
             if has_ctl(&a.filename) || has_ctl(&a.content_type) || a.filename.is_empty() {
                 return Err(invalid("attachment filename/content type invalid"));
@@ -129,19 +142,28 @@ impl SendRequest {
             if a.data.len() > limits.max_attachment_bytes {
                 return Err(Error::new(
                     ErrorCode::LimitExceeded,
-                    format!("attachment '{}' exceeds {} bytes", a.filename, limits.max_attachment_bytes),
+                    format!(
+                        "attachment '{}' exceeds {} bytes",
+                        a.filename, limits.max_attachment_bytes
+                    ),
                 ));
             }
             total += a.data.len();
         }
         if total > limits.max_total_bytes {
-            return Err(Error::new(ErrorCode::LimitExceeded, format!("message exceeds {} bytes", limits.max_total_bytes)));
+            return Err(Error::new(
+                ErrorCode::LimitExceeded,
+                format!("message exceeds {} bytes", limits.max_total_bytes),
+            ));
         }
         Ok(())
     }
 
-    fn from_and_recipients(&self) -> impl Iterator<Item = &Address> {
-        std::iter::once(&self.from).chain(&self.to).chain(&self.cc).chain(&self.bcc)
+    fn all_addresses(&self) -> impl Iterator<Item = &Address> {
+        std::iter::once(&self.from)
+            .chain(&self.to)
+            .chain(&self.cc)
+            .chain(&self.bcc)
     }
 
     /// Canonical hash of everything that defines the message. Excludes the idempotency
@@ -198,14 +220,21 @@ fn is_message_id(s: &str) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
     pub(crate) fn sample() -> SendRequest {
         SendRequest {
             idempotency_key: "k1".into(),
-            from: Address { name: Some("Me".into()), email: "me@example.com".into() },
-            to: vec![Address { name: None, email: "you@example.org".into() }],
+            from: Address {
+                name: Some("Me".into()),
+                email: "me@example.com".into(),
+            },
+            to: vec![Address {
+                name: None,
+                email: "you@example.org".into(),
+            }],
             cc: vec![],
             bcc: vec![],
             subject: "Hi".into(),
@@ -232,8 +261,15 @@ mod tests {
         b.text = Some("hello!".into());
         assert_ne!(a.content_hash(), b.content_hash());
         let mut c = sample();
-        c.bcc.push(Address { name: None, email: "x@y.z".into() });
-        assert_ne!(a.content_hash(), c.content_hash(), "bcc must be bound by approval");
+        c.bcc.push(Address {
+            name: None,
+            email: "x@y.z".into(),
+        });
+        assert_ne!(
+            a.content_hash(),
+            c.content_hash(),
+            "bcc must be bound by approval"
+        );
     }
 
     #[test]
@@ -257,12 +293,27 @@ mod tests {
         r.to[0].name = Some("a\nb".into());
         assert_eq!(r.validate(&l).unwrap_err().code(), ErrorCode::InvalidInput);
         let mut r = sample();
-        r.to = (0..51).map(|i| Address { name: None, email: format!("u{i}@x.y") }).collect();
+        r.to = (0..51)
+            .map(|i| Address {
+                name: None,
+                email: format!("u{i}@x.y"),
+            })
+            .collect();
         assert_eq!(r.validate(&l).unwrap_err().code(), ErrorCode::LimitExceeded);
         let mut r = sample();
-        r.attachments.push(Attachment { filename: "a.bin".into(), content_type: "application/octet-stream".into(), data: vec![0; 11] });
-        let tight = SmtpLimits { max_attachment_bytes: 10, ..SmtpLimits::default() };
-        assert_eq!(r.validate(&tight).unwrap_err().code(), ErrorCode::LimitExceeded);
+        r.attachments.push(Attachment {
+            filename: "a.bin".into(),
+            content_type: "application/octet-stream".into(),
+            data: vec![0; 11],
+        });
+        let tight = SmtpLimits {
+            max_attachment_bytes: 10,
+            ..SmtpLimits::default()
+        };
+        assert_eq!(
+            r.validate(&tight).unwrap_err().code(),
+            ErrorCode::LimitExceeded
+        );
         let mut r = sample();
         r.in_reply_to = Some("not-an-id".into());
         assert_eq!(r.validate(&l).unwrap_err().code(), ErrorCode::InvalidInput);

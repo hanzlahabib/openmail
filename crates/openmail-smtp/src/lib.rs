@@ -14,6 +14,6 @@ pub mod sqlite_outbox;
 
 pub use approval::{ApprovalProof, ContentHash};
 pub use client::{SendOutcome, SmtpClient, SmtpOptions};
-pub use outbox::{AuditEntry, Outcome, OutboxRecord, OutboxState, OutboxStore};
+pub use outbox::{AuditEntry, OutboxRecord, OutboxState, OutboxStore, Outcome};
 pub use request::{Attachment, SendRequest, SmtpLimits};
 pub use sqlite_outbox::SqliteOutbox;
