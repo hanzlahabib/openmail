@@ -1,6 +1,6 @@
 # Notes for a reviewer / tester
 
-1. Server: `https://mail-mcp.example.com/mcp` (or your own: see `docs/deployment/REMOTE.md`).
+1. Server: `$OPENMAIL_PUBLIC_URL/mcp` (or your own: see `docs/deployment/REMOTE.md`).
 2. In ChatGPT (web, developer mode): Settings, Connectors, add a custom MCP server, URL above, auth OAuth.
    Registration is automatic (RFC 7591). You are sent to the OpenMail consent page.
 3. Sign in with the owner password (given out of band, never in this repo) and approve `mail:read`.
