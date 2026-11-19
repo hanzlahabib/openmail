@@ -459,6 +459,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)] // POSIX-style absolute paths in the fixtures
     fn state_dir_precedence_matches_approvals() {
         assert_eq!(
             state_dir_from(Some("/s".into()), Some("/x".into()), Some("/h".into())),

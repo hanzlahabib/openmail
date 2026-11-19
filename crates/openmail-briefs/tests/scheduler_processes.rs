@@ -42,12 +42,18 @@ impl JobHandler for FileHandler {
 }
 
 fn job(store: &SqliteSchedulerStore) -> CompiledJob {
-    // Every minute; registered two minutes ago so a fire is due now.
+    // Registered two minutes ago with a daily fire time one minute ago: exactly one fire is due
+    // now and the next is a day away, so a test that crosses a minute boundary cannot see a
+    // second one.
     let created = Utc::now() - chrono::Duration::minutes(2);
+    let fire = Utc::now() - chrono::Duration::minutes(1);
     let created = store.job_created_at(JOB, created).unwrap();
     CompiledJob::compile(JobSpec {
         id: JOB.into(),
-        schedule: Schedule::Cron("* * * * *".into()),
+        schedule: Schedule::Daily {
+            hour: u8::try_from(chrono::Timelike::hour(&fire)).unwrap(),
+            minute: u8::try_from(chrono::Timelike::minute(&fire)).unwrap(),
+        },
         timezone: "UTC".into(),
         enabled: true,
         created_at: created,
@@ -142,7 +148,8 @@ async fn two_processes_run_one_fire_exactly_once() {
         FileHandler {
             log: log.clone(),
             who: "parent",
-            work: Duration::from_millis(2500),
+            // Long enough that a slow-starting child process (cold macOS runners) still finds the lease held.
+            work: Duration::from_secs(8),
         },
         "parent",
         Duration::from_secs(60),

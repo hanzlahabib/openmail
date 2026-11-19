@@ -294,6 +294,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(unix)] // POSIX-style absolute paths in the fixtures
     fn explicit_state_dir_wins_then_xdg_then_home() {
         let env = StateEnv {
             xdg_state: Some("/xdg".into()),
