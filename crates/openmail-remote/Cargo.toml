@@ -8,6 +8,25 @@ license.workspace = true
 
 [dependencies]
 openmail-core.workspace = true
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"] }
+# 0.6 line matches axum 0.8's tower stack; 0.7 changes the layer APIs.
+tower-http = { version = "0.6.11", default-features = false, features = ["limit", "timeout"] }
+tokio.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+sha2.workspace = true
+# --- auth.rs (T13) ---
+base64.workspace = true
+jsonwebtoken = { version = "12", default-features = false, features = ["rust_crypto", "use_pem"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls"] }
+serde.workspace = true
+serde_json.workspace = true
+subtle = "2"
+url = "2.5.8"
+# --- end auth.rs ---
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
 
 [lints]
 workspace = true
