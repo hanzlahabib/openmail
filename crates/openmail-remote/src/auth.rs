@@ -92,6 +92,9 @@ impl AuthError {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProtectedResourceMetadata {
     pub resource: String,
+    /// Omitted when there is no authorization server (static-bearer mode), so an OAuth client
+    /// following the metadata learns there is nothing to authorize against.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub authorization_servers: Vec<String>,
     pub scopes_supported: Vec<String>,
     pub bearer_methods_supported: Vec<String>,
@@ -103,6 +106,19 @@ impl ProtectedResourceMetadata {
             resource: resource.to_owned(),
             authorization_servers: vec![authorization_server.to_owned()],
             scopes_supported: scopes.iter().map(|s| (*s).to_owned()).collect(),
+            bearer_methods_supported: vec!["header".to_owned()],
+        }
+    }
+}
+
+impl ProtectedResourceMetadata {
+    /// Static-bearer deployments have no OAuth authorization server; advertising one (or
+    /// ourselves as one) would send an OAuth client into a dead end. ChatGPT cannot use this mode.
+    pub fn static_bearer(resource: &str) -> Self {
+        Self {
+            resource: resource.to_owned(),
+            authorization_servers: Vec::new(),
+            scopes_supported: Vec::new(),
             bearer_methods_supported: vec!["header".to_owned()],
         }
     }
@@ -822,6 +838,13 @@ mod tests {
         let v = serde_json::to_value(&m).unwrap();
         assert_eq!(v["resource"], AUD);
         assert_eq!(v["authorization_servers"][0], ISS);
+    }
+
+    #[test]
+    fn static_bearer_metadata_names_no_authorization_server() {
+        let v = serde_json::to_value(ProtectedResourceMetadata::static_bearer(AUD)).unwrap();
+        assert_eq!(v["resource"], AUD);
+        assert!(v.get("authorization_servers").is_none(), "{v}");
         assert_eq!(v["bearer_methods_supported"][0], "header");
     }
 
