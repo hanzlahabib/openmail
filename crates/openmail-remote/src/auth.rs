@@ -7,7 +7,9 @@
 //!   inbound token downstream (no token passthrough).
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -17,6 +19,8 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use jsonwebtoken::jwk::JwkSet;
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
+use openmail_core::ids::AccountId;
+use openmail_security::{Action, Principal};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
@@ -35,18 +39,22 @@ pub const DEFAULT_MIN_REFETCH: Duration = Duration::from_secs(30);
 /// Clock skew tolerated for `exp`/`nbf`.
 pub const DEFAULT_LEEWAY_SECS: u64 = 30;
 
-/// Authenticated caller, inserted into request extensions by [`require_auth`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Principal {
-    pub client_id: String,
-    pub scopes: BTreeSet<String>,
-    pub accounts: BTreeSet<String>,
-}
+/// OAuth scope strings that grant a tool action. Unknown scopes grant nothing.
+pub const SCOPE_READ: &str = "mail:read";
+pub const SCOPE_ORGANIZE: &str = "mail:organize";
+pub const SCOPE_DRAFT: &str = "mail:draft";
+pub const SCOPE_SEND: &str = "mail:send";
+pub const SCOPE_DELETE: &str = "mail:delete";
 
-impl Principal {
-    /// Whether the token carried `scope`.
-    pub fn has_scope(&self, scope: &str) -> bool {
-        self.scopes.contains(scope)
+/// The action a token scope grants, if it is one of ours.
+pub fn action_for_scope(scope: &str) -> Option<Action> {
+    match scope {
+        SCOPE_READ => Some(Action::Read),
+        SCOPE_ORGANIZE => Some(Action::Organize),
+        SCOPE_DRAFT => Some(Action::Draft),
+        SCOPE_SEND => Some(Action::Send),
+        SCOPE_DELETE => Some(Action::Delete),
+        _ => None,
     }
 }
 
@@ -395,19 +403,24 @@ impl<F: JwksFetcher> JwtValidator<F> {
             .iter()
             .filter_map(|s| self.config.scope_accounts.get(s))
             .flatten()
-            .cloned()
-            .collect();
-        Ok(Principal {
-            client_id,
-            scopes,
-            accounts,
-        })
+            .filter_map(|raw| match AccountId::new(raw) {
+                Ok(id) => Some(id),
+                Err(_) => {
+                    tracing::warn!("scope mapping names an invalid account id; ignored");
+                    None
+                }
+            });
+        let actions = scopes.iter().filter_map(|s| action_for_scope(s));
+        Ok(Principal::new(client_id, accounts, actions))
     }
 }
 
 // ---------------------------------------------------------------------------
 // Static bearer (self-hosting)
 // ---------------------------------------------------------------------------
+
+/// Audit identity of the static-bearer principal.
+pub const STATIC_BEARER_CLIENT_ID: &str = "static-bearer";
 
 /// One shared secret for single-user deployments. Only its SHA-256 digest is
 /// kept, and comparison is constant-time on equal-length digests (so neither
@@ -426,14 +439,14 @@ impl std::fmt::Debug for StaticBearer {
 }
 
 impl StaticBearer {
-    pub fn new(token: &str, scopes: &[&str], accounts: &[&str]) -> Self {
+    pub fn new(
+        token: &str,
+        actions: impl IntoIterator<Item = Action>,
+        accounts: impl IntoIterator<Item = AccountId>,
+    ) -> Self {
         Self {
             digest: Sha256::digest(token.as_bytes()).into(),
-            principal: Principal {
-                client_id: "static-bearer".to_owned(),
-                scopes: scopes.iter().map(|s| (*s).to_owned()).collect(),
-                accounts: accounts.iter().map(|s| (*s).to_owned()).collect(),
-            },
+            principal: Principal::new(STATIC_BEARER_CLIENT_ID, accounts, actions),
         }
     }
 
@@ -466,10 +479,27 @@ impl<F: JwksFetcher> Authenticator<F> {
     }
 }
 
+/// Object-safe seam so the HTTP edge need not be generic over the JWKS fetcher.
+pub trait TokenAuthenticator: std::fmt::Debug + Send + Sync {
+    fn authenticate<'a>(
+        &'a self,
+        token: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Principal, AuthError>> + Send + 'a>>;
+}
+
+impl<F: JwksFetcher + std::fmt::Debug + 'static> TokenAuthenticator for Authenticator<F> {
+    fn authenticate<'a>(
+        &'a self,
+        token: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Principal, AuthError>> + Send + 'a>> {
+        Box::pin(Authenticator::authenticate(self, token))
+    }
+}
+
 /// Shared state for [`require_auth`].
 #[derive(Debug)]
-pub struct AuthState<F> {
-    pub authenticator: Authenticator<F>,
+pub struct AuthState {
+    pub authenticator: Arc<dyn TokenAuthenticator>,
     pub resource_metadata_url: String,
 }
 
@@ -490,8 +520,8 @@ fn unauthorized(state_url: &str, err: &AuthError) -> Response {
 
 /// axum middleware: authenticate, attach [`Principal`], and strip the inbound
 /// `Authorization` header so the token can never be forwarded (no passthrough).
-pub async fn require_auth<F: JwksFetcher + 'static>(
-    State(state): State<Arc<AuthState<F>>>,
+pub async fn require_auth(
+    State(state): State<Arc<AuthState>>,
     mut req: Request,
     next: Next,
 ) -> Response {
@@ -536,11 +566,16 @@ mod tests {
     const ISS: &str = "https://idp.example.com";
     const AUD: &str = "https://mail.example.com/mcp";
 
+    fn account(id: &str) -> AccountId {
+        AccountId::new(id).unwrap()
+    }
+
     fn jwk(kid: &str, x: &str, y: &str) -> serde_json::Value {
         serde_json::json!({"kty":"EC","crv":"P-256","kid":kid,"alg":"ES256","use":"sig","x":x,"y":y})
     }
 
     /// Serves a mutable JWKS and counts fetches.
+    #[derive(Debug)]
     struct FakeFetcher {
         body: Arc<Mutex<Vec<u8>>>,
         calls: Arc<AtomicUsize>,
@@ -609,9 +644,11 @@ mod tests {
         let h = harness();
         let t = mint(KEY_A_PEM, "a", ISS, AUD, now() + 300);
         let p = h.validator.validate(&t).await.unwrap();
-        assert_eq!(p.client_id, "client-1");
-        assert!(p.has_scope("mail:read"));
-        assert_eq!(p.accounts, BTreeSet::from(["work".to_owned()]));
+        // "mail:work" only maps accounts; "mail:read" is the sole action scope.
+        assert_eq!(
+            p,
+            Principal::new("client-1", [account("work")], [Action::Read])
+        );
     }
 
     #[tokio::test]
@@ -790,38 +827,41 @@ mod tests {
 
     #[test]
     fn static_bearer_accepts_only_exact_token() {
-        let s = StaticBearer::new("correct-horse", &["mail:read"], &["home"]);
+        let s = StaticBearer::new("correct-horse", [Action::Read], [account("home")]);
         let p = s.validate("correct-horse").unwrap();
-        assert_eq!(p.client_id, "static-bearer");
-        assert!(p.accounts.contains("home"));
+        assert_eq!(p.client_id(), STATIC_BEARER_CLIENT_ID);
+        assert_eq!(
+            p,
+            Principal::new(STATIC_BEARER_CLIENT_ID, [account("home")], [Action::Read])
+        );
         assert!(s.validate("correct-horse ").is_err());
         assert!(s.validate("").is_err());
         assert!(s.validate("x").is_err());
     }
 
-    fn app(state: Arc<AuthState<FakeFetcher>>) -> Router {
+    fn app(state: Arc<AuthState>) -> Router {
         async fn whoami(
             Extension(p): Extension<Principal>,
             headers: axum::http::HeaderMap,
         ) -> String {
             format!(
                 "{}|{}",
-                p.client_id,
+                p.client_id(),
                 headers.contains_key(header::AUTHORIZATION)
             )
         }
         Router::new()
             .route("/mcp", get(whoami))
-            .layer(from_fn_with_state(state, require_auth::<FakeFetcher>))
+            .layer(from_fn_with_state(state, require_auth))
     }
 
-    fn static_state() -> Arc<AuthState<FakeFetcher>> {
+    fn static_state() -> Arc<AuthState> {
         Arc::new(AuthState {
-            authenticator: Authenticator::Static(StaticBearer::new(
+            authenticator: Arc::new(Authenticator::<FakeFetcher>::Static(StaticBearer::new(
                 "s3cret",
-                &["mail:read"],
-                &["home"],
-            )),
+                [Action::Read],
+                [account("home")],
+            ))),
             resource_metadata_url: "https://mail.example.com/.well-known/oauth-protected-resource"
                 .into(),
         })
