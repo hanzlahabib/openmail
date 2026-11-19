@@ -1,7 +1,11 @@
 //! Input types of the organize/draft/send/attachment tools. Strict schemas (unknown fields are
 //! errors) with explicit size bounds; deeper checks happen in the tool.
+use openmail_core::model::Address;
 use schemars::JsonSchema;
 use serde::Deserialize;
+
+use crate::error::ToolError;
+use crate::sanitize::strip_invisible;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -132,4 +136,46 @@ pub struct ForwardApprovedInput {
     /// Approval id granted by the account owner out of band; omit to create a pending request.
     #[schemars(length(min = 1, max = 64))]
     pub approval_id: Option<String>,
+}
+
+impl AddressInput {
+    /// Header-injection safe: the address must be a plain `local@domain` (no whitespace, control
+    /// characters, quotes, angle brackets, commas) and the display name loses control/invisible chars.
+    pub fn into_address(self) -> Result<Address, ToolError> {
+        let email = self.email.trim().to_owned();
+        let bad = |c: char| {
+            c.is_whitespace()
+                || c.is_control()
+                || matches!(
+                    c,
+                    '<' | '>' | ',' | ';' | '"' | '(' | ')' | '\\' | '[' | ']'
+                )
+        };
+        let ok = email
+            .split_once('@')
+            .is_some_and(|(l, d)| !l.is_empty() && !d.is_empty() && !d.contains('@'))
+            && !email.chars().any(bad);
+        if !ok {
+            return Err(ToolError::invalid(
+                "recipient must be a plain address like name@example.com",
+            ));
+        }
+        let name = self
+            .name
+            .map(|n| {
+                strip_invisible(&n)
+                    .replace(['\r', '\n'], " ")
+                    .trim()
+                    .to_owned()
+            })
+            .filter(|n| !n.is_empty());
+        Ok(Address { name, email })
+    }
+}
+
+pub fn addresses(list: Option<Vec<AddressInput>>) -> Result<Vec<Address>, ToolError> {
+    list.unwrap_or_default()
+        .into_iter()
+        .map(AddressInput::into_address)
+        .collect()
 }

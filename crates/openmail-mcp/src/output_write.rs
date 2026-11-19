@@ -47,3 +47,12 @@ pub struct SendOut {
     /// Whether a copy was stored in the Sent folder (best effort; a failure does not unsend).
     pub sent_copy_saved: bool,
 }
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct PrepareReplyOut {
+    pub ok: bool,
+    pub message_ref: String,
+    /// Recipient addresses the reply was addressed to (derived from the source headers).
+    pub to: Vec<UntrustedText>,
+    pub subject: UntrustedText,
+}
