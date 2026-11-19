@@ -47,6 +47,14 @@ pub enum Command {
     Serve(ServeArgs),
     /// Daily brief commands.
     Brief(BriefArgs),
+    /// Out-of-band send approvals (never reachable from an MCP tool).
+    Approvals(ApprovalsArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ApprovalsArgs {
+    #[arg(skip)]
+    pub config: PathBuf,
 }
 
 #[derive(Debug, Args)]
