@@ -3,6 +3,7 @@
 use std::future::Future;
 use std::sync::Arc;
 
+use openmail_briefs::engine::BriefEngine;
 use openmail_core::config::{AccountConfig, Config, Limits, Permissions};
 use openmail_core::ids::{AccountId, MessageRef};
 use openmail_core::model::PageRequest;
@@ -54,6 +55,7 @@ pub struct OpenMailServer<B: FullBackend> {
     principals: PrincipalSource,
     limiter: Arc<RateLimiter<SystemClock>>,
     pub(crate) outgoing: Option<Arc<dyn Outgoing>>,
+    pub(crate) briefs: Option<Arc<BriefEngine<B>>>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -67,6 +69,7 @@ impl<B: FullBackend> Clone for OpenMailServer<B> {
             principals: self.principals.clone(),
             limiter: Arc::clone(&self.limiter),
             outgoing: self.outgoing.clone(),
+            briefs: self.briefs.clone(),
             tool_router: self.tool_router.clone(),
         }
     }
@@ -139,6 +142,7 @@ impl<B: FullBackend> OpenMailServer<B> {
                 rate_limits.per_account,
             )),
             outgoing: None,
+            briefs: None,
             tool_router,
         }
     }
@@ -172,6 +176,20 @@ impl<B: FullBackend> OpenMailServer<B> {
     pub fn with_outgoing(mut self, outgoing: Arc<dyn Outgoing>) -> Self {
         self.outgoing = Some(outgoing);
         self
+    }
+
+    /// Enable the `brief_*` tools. Without it they exist but answer `UNSUPPORTED` (after
+    /// authorization), so a deployment that never configured briefs cannot generate one.
+    #[must_use]
+    pub fn with_briefs(mut self, engine: Arc<BriefEngine<B>>) -> Self {
+        self.briefs = Some(engine);
+        self
+    }
+
+    /// The shared backend, for components that run beside the server (the brief scheduler)
+    /// and must use the same connections and limits instead of opening a second pool.
+    pub fn backend(&self) -> Arc<B> {
+        Arc::clone(&self.backend)
     }
 
     /// The caller for this request. Fails closed: a resolver that cannot identify the caller

@@ -58,7 +58,12 @@ fn first_ref(page: &Value) -> String {
         .to_owned()
 }
 
-const TOOLS: [&str; 22] = [
+const TOOLS: [&str; 27] = [
+    "brief_generate",
+    "brief_get_followups",
+    "brief_get_latest",
+    "brief_get_status",
+    "brief_list_action_items",
     "mail_archive_message",
     "mail_create_draft",
     "mail_delete_draft",
