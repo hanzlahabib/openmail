@@ -17,7 +17,9 @@ pub struct SystemClock {
 
 impl SystemClock {
     pub fn new() -> Self {
-        Self { origin: std::time::Instant::now() }
+        Self {
+            origin: std::time::Instant::now(),
+        }
     }
 }
 
@@ -31,7 +33,9 @@ impl Clock for SystemClock {
     fn unix_secs(&self) -> u64 {
         // A clock before 1970 means the host is broken; 0 makes every approval
         // look unexpired only if its expiry is 0, which issuance never produces.
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs())
     }
 
     fn monotonic_ms(&self) -> u64 {
@@ -54,7 +58,10 @@ pub(crate) mod testing {
 
     impl ManualClock {
         pub fn new(unix_secs: u64) -> Self {
-            Self { unix: AtomicU64::new(unix_secs), mono: AtomicU64::new(0) }
+            Self {
+                unix: AtomicU64::new(unix_secs),
+                mono: AtomicU64::new(0),
+            }
         }
         pub fn advance_ms(&self, ms: u64) {
             self.mono.fetch_add(ms, Ordering::SeqCst);

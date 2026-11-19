@@ -46,7 +46,6 @@ pub struct OsKeyring;
 
 impl KeyringProvider for OsKeyring {
     fn password(&self, service: &str, user: &str) -> std::result::Result<String, KeyringFailure> {
-        use keyring::Error as Ke;
         let entry = keyring::Entry::new(service, user).map_err(|e| classify(&e))?;
         entry.get_password().map_err(|e| classify(&e))
     }
@@ -56,7 +55,9 @@ fn classify(e: &keyring::Error) -> KeyringFailure {
     use keyring::Error as Ke;
     match e {
         Ke::NoEntry => KeyringFailure::NoEntry,
-        Ke::NoStorageAccess(_) | Ke::NoDefaultStore | Ke::PlatformFailure(_) => KeyringFailure::Unavailable,
+        Ke::NoStorageAccess(_) | Ke::NoDefaultStore | Ke::PlatformFailure(_) => {
+            KeyringFailure::Unavailable
+        }
         Ke::BadEncoding(_) => KeyringFailure::BadEncoding,
         _ => KeyringFailure::Other,
     }
@@ -69,7 +70,10 @@ pub struct EnvKeyringSecretSource<E = ProcessEnv, K = OsKeyring> {
 
 impl EnvKeyringSecretSource {
     pub fn new() -> Self {
-        Self { env: ProcessEnv, keyring: OsKeyring }
+        Self {
+            env: ProcessEnv,
+            keyring: OsKeyring,
+        }
     }
 }
 
@@ -87,7 +91,8 @@ impl<E: EnvProvider, K: KeyringProvider> EnvKeyringSecretSource<E, K> {
 
 impl<E, K> fmt::Debug for EnvKeyringSecretSource<E, K> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("EnvKeyringSecretSource").finish_non_exhaustive()
+        f.debug_struct("EnvKeyringSecretSource")
+            .finish_non_exhaustive()
     }
 }
 
@@ -151,19 +156,28 @@ mod tests {
         }
     }
 
-    fn source(env: Vec<(&'static str, Result<String, VarError>)>, kr: Result<String, KeyringFailure>) -> EnvKeyringSecretSource<FakeEnv, FakeKeyring> {
+    fn source(
+        env: Vec<(&'static str, Result<String, VarError>)>,
+        kr: Result<String, KeyringFailure>,
+    ) -> EnvKeyringSecretSource<FakeEnv, FakeKeyring> {
         EnvKeyringSecretSource::with_providers(FakeEnv(env.into_iter().collect()), FakeKeyring(kr))
     }
     fn env_ref(var: &str) -> CredentialRef {
         CredentialRef::Env { var: var.into() }
     }
     fn kr_ref() -> CredentialRef {
-        CredentialRef::Keyring { service: "openmail".into(), user: "me@example.com".into() }
+        CredentialRef::Keyring {
+            service: "openmail".into(),
+            user: "me@example.com".into(),
+        }
     }
 
     #[test]
     fn env_resolves_and_secret_debug_is_redacted() {
-        let s = source(vec![("PW", Ok(CANARY.into()))], Err(KeyringFailure::NoEntry));
+        let s = source(
+            vec![("PW", Ok(CANARY.into()))],
+            Err(KeyringFailure::NoEntry),
+        );
         let secret = s.resolve(&env_ref("PW")).unwrap();
         assert_eq!(secret.expose_secret(), CANARY);
         assert!(!format!("{secret:?}").contains(CANARY));
@@ -181,12 +195,18 @@ mod tests {
     #[test]
     fn empty_and_non_unicode_env_rejected_without_leaking() {
         let s = source(vec![("E", Ok(String::new()))], Err(KeyringFailure::NoEntry));
-        assert_eq!(s.resolve(&env_ref("E")).unwrap_err().code(), ErrorCode::AuthFailed);
+        assert_eq!(
+            s.resolve(&env_ref("E")).unwrap_err().code(),
+            ErrorCode::AuthFailed
+        );
         #[cfg(unix)]
         {
             use std::os::unix::ffi::OsStringExt;
             let bad = std::ffi::OsString::from_vec(vec![0xff, 0xfe]);
-            let s = source(vec![("N", Err(VarError::NotUnicode(bad)))], Err(KeyringFailure::NoEntry));
+            let s = source(
+                vec![("N", Err(VarError::NotUnicode(bad)))],
+                Err(KeyringFailure::NoEntry),
+            );
             let e = s.resolve(&env_ref("N")).unwrap_err();
             assert!(e.to_string().contains("not valid UTF-8"));
         }
@@ -196,7 +216,11 @@ mod tests {
     fn malformed_env_names_rejected() {
         let s = source(vec![], Err(KeyringFailure::NoEntry));
         for bad in ["", "A=B", "A\0B"] {
-            assert_eq!(s.resolve(&env_ref(bad)).unwrap_err().code(), ErrorCode::ConfigInvalid, "{bad:?}");
+            assert_eq!(
+                s.resolve(&env_ref(bad)).unwrap_err().code(),
+                ErrorCode::ConfigInvalid,
+                "{bad:?}"
+            );
         }
     }
 
@@ -204,12 +228,23 @@ mod tests {
     fn keyring_success_and_failures_map_to_typed_errors() {
         let ok = source(vec![], Ok(CANARY.into()));
         assert_eq!(ok.resolve(&kr_ref()).unwrap().expose_secret(), CANARY);
-        for f in [KeyringFailure::NoEntry, KeyringFailure::Unavailable, KeyringFailure::BadEncoding, KeyringFailure::Other] {
+        for f in [
+            KeyringFailure::NoEntry,
+            KeyringFailure::Unavailable,
+            KeyringFailure::BadEncoding,
+            KeyringFailure::Other,
+        ] {
             let e = source(vec![], Err(f)).resolve(&kr_ref()).unwrap_err();
             assert_eq!(e.code(), ErrorCode::AuthFailed);
             assert!(!e.to_string().contains(CANARY));
         }
-        assert_eq!(source(vec![], Ok(String::new())).resolve(&kr_ref()).unwrap_err().code(), ErrorCode::AuthFailed);
+        assert_eq!(
+            source(vec![], Ok(String::new()))
+                .resolve(&kr_ref())
+                .unwrap_err()
+                .code(),
+            ErrorCode::AuthFailed
+        );
     }
 
     #[test]
@@ -227,7 +262,10 @@ imap = { host = "imap.example.com", port = 993, tls = "implicit" }
 "#,
         )
         .unwrap();
-        let s = source(vec![("PW", Ok(CANARY.into()))], Err(KeyringFailure::NoEntry));
+        let s = source(
+            vec![("PW", Ok(CANARY.into()))],
+            Err(KeyringFailure::NoEntry),
+        );
         let secret = s.resolve(&cfg.accounts[0].credential).unwrap();
         let dump = format!("{cfg:?} {:?} {secret:?} {s:?}", cfg.accounts[0]);
         assert!(!dump.contains(CANARY));
@@ -238,6 +276,11 @@ imap = { host = "imap.example.com", port = 993, tls = "implicit" }
         // PATH is set on every supported platform; asserts the real provider is wired.
         let s = EnvKeyringSecretSource::new();
         assert!(s.resolve(&env_ref("PATH")).is_ok());
-        assert_eq!(s.resolve(&env_ref("OPENMAIL_DEFINITELY_UNSET_VAR_X")).unwrap_err().code(), ErrorCode::AuthFailed);
+        assert_eq!(
+            s.resolve(&env_ref("OPENMAIL_DEFINITELY_UNSET_VAR_X"))
+                .unwrap_err()
+                .code(),
+            ErrorCode::AuthFailed
+        );
     }
 }

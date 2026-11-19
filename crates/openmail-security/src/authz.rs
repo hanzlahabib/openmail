@@ -26,8 +26,16 @@ pub struct Principal {
 }
 
 impl Principal {
-    pub fn new(client_id: impl Into<String>, accounts: impl IntoIterator<Item = AccountId>, scopes: impl IntoIterator<Item = Action>) -> Self {
-        Self { client_id: client_id.into(), accounts: accounts.into_iter().collect(), scopes: scopes.into_iter().collect() }
+    pub fn new(
+        client_id: impl Into<String>,
+        accounts: impl IntoIterator<Item = AccountId>,
+        scopes: impl IntoIterator<Item = Action>,
+    ) -> Self {
+        Self {
+            client_id: client_id.into(),
+            accounts: accounts.into_iter().collect(),
+            scopes: scopes.into_iter().collect(),
+        }
     }
     pub fn client_id(&self) -> &str {
         &self.client_id
@@ -45,18 +53,29 @@ impl<'a> Authorizer<'a> {
     }
 
     /// Returns the account config when `action` is allowed.
-    pub fn authorize(&self, principal: &Principal, account: &AccountId, action: Action) -> Result<&'a AccountConfig> {
+    pub fn authorize(
+        &self,
+        principal: &Principal,
+        account: &AccountId,
+        action: Action,
+    ) -> Result<&'a AccountConfig> {
         // Checked before the config lookup so a principal cannot probe which
         // account ids exist outside its allowlist.
         if !principal.accounts.contains(account) || !principal.scopes.contains(&action) {
-            return Err(Error::new(ErrorCode::AccessDenied, format!("access to account '{account}' denied")));
+            return Err(Error::new(
+                ErrorCode::AccessDenied,
+                format!("access to account '{account}' denied"),
+            ));
         }
         let cfg = self.config.account(account)?;
         if action == Action::Read {
             return Ok(cfg);
         }
         if cfg.read_only {
-            return Err(Error::new(ErrorCode::ReadOnlyAccount, format!("account '{account}' is read-only")));
+            return Err(Error::new(
+                ErrorCode::ReadOnlyAccount,
+                format!("account '{account}' is read-only"),
+            ));
         }
         let p = &cfg.permissions;
         let granted = match action {
@@ -69,13 +88,20 @@ impl<'a> Authorizer<'a> {
         if granted {
             Ok(cfg)
         } else {
-            Err(Error::new(ErrorCode::AccessDenied, format!("{action:?} is not permitted on account '{account}'")))
+            Err(Error::new(
+                ErrorCode::AccessDenied,
+                format!("{action:?} is not permitted on account '{account}'"),
+            ))
         }
     }
 
     /// Accounts the principal may read, so listings never reveal others.
     pub fn visible_accounts(&self, principal: &Principal) -> Vec<&'a AccountConfig> {
-        self.config.accounts.iter().filter(|a| self.authorize(principal, &a.id, Action::Read).is_ok()).collect()
+        self.config
+            .accounts
+            .iter()
+            .filter(|a| self.authorize(principal, &a.id, Action::Read).is_ok())
+            .collect()
     }
 }
 
@@ -119,7 +145,13 @@ imap = { host = "i.example.com", port = 993, tls = "implicit" }
     fn cfg() -> Config {
         Config::from_toml(CFG).unwrap()
     }
-    const ALL: [Action; 5] = [Action::Read, Action::Organize, Action::Draft, Action::Send, Action::Delete];
+    const ALL: [Action; 5] = [
+        Action::Read,
+        Action::Organize,
+        Action::Draft,
+        Action::Send,
+        Action::Delete,
+    ];
 
     #[test]
     fn default_deny_for_empty_principal() {
@@ -128,7 +160,10 @@ imap = { host = "i.example.com", port = 993, tls = "implicit" }
         let p = Principal::new("c", [], []);
         for acct in ["ro", "rw", "secret"] {
             for act in ALL {
-                assert_eq!(a.authorize(&p, &id(acct), act).unwrap_err().code(), ErrorCode::AccessDenied);
+                assert_eq!(
+                    a.authorize(&p, &id(acct), act).unwrap_err().code(),
+                    ErrorCode::AccessDenied
+                );
             }
         }
     }
@@ -139,8 +174,16 @@ imap = { host = "i.example.com", port = 993, tls = "implicit" }
         let a = Authorizer::new(&c);
         let p = Principal::new("c", [id("ro")], ALL);
         assert!(a.authorize(&p, &id("ro"), Action::Read).is_ok());
-        for act in [Action::Organize, Action::Draft, Action::Send, Action::Delete] {
-            assert_eq!(a.authorize(&p, &id("ro"), act).unwrap_err().code(), ErrorCode::ReadOnlyAccount);
+        for act in [
+            Action::Organize,
+            Action::Draft,
+            Action::Send,
+            Action::Delete,
+        ] {
+            assert_eq!(
+                a.authorize(&p, &id("ro"), act).unwrap_err().code(),
+                ErrorCode::ReadOnlyAccount
+            );
         }
     }
 
@@ -152,7 +195,12 @@ imap = { host = "i.example.com", port = 993, tls = "implicit" }
         for act in [Action::Read, Action::Organize, Action::Draft, Action::Send] {
             assert!(a.authorize(&p, &id("rw"), act).is_ok(), "{act:?}");
         }
-        assert_eq!(a.authorize(&p, &id("rw"), Action::Delete).unwrap_err().code(), ErrorCode::AccessDenied);
+        assert_eq!(
+            a.authorize(&p, &id("rw"), Action::Delete)
+                .unwrap_err()
+                .code(),
+            ErrorCode::AccessDenied
+        );
     }
 
     #[test]
@@ -161,7 +209,10 @@ imap = { host = "i.example.com", port = 993, tls = "implicit" }
         let a = Authorizer::new(&c);
         let p = Principal::new("c", [id("rw")], [Action::Read]);
         assert!(a.authorize(&p, &id("rw"), Action::Read).is_ok());
-        assert_eq!(a.authorize(&p, &id("rw"), Action::Send).unwrap_err().code(), ErrorCode::AccessDenied);
+        assert_eq!(
+            a.authorize(&p, &id("rw"), Action::Send).unwrap_err().code(),
+            ErrorCode::AccessDenied
+        );
     }
 
     #[test]
@@ -169,10 +220,24 @@ imap = { host = "i.example.com", port = 993, tls = "implicit" }
         let c = cfg();
         let a = Authorizer::new(&c);
         let p = Principal::new("c", [id("rw")], ALL);
-        assert_eq!(a.authorize(&p, &id("secret"), Action::Read).unwrap_err().code(), ErrorCode::AccessDenied);
+        assert_eq!(
+            a.authorize(&p, &id("secret"), Action::Read)
+                .unwrap_err()
+                .code(),
+            ErrorCode::AccessDenied
+        );
         // Existing and non-existing foreign accounts are indistinguishable.
-        assert_eq!(a.authorize(&p, &id("nonexistent"), Action::Read).unwrap_err().code(), ErrorCode::AccessDenied);
-        let visible: Vec<_> = a.visible_accounts(&p).iter().map(|x| x.id.as_str().to_owned()).collect();
+        assert_eq!(
+            a.authorize(&p, &id("nonexistent"), Action::Read)
+                .unwrap_err()
+                .code(),
+            ErrorCode::AccessDenied
+        );
+        let visible: Vec<_> = a
+            .visible_accounts(&p)
+            .iter()
+            .map(|x| x.id.as_str().to_owned())
+            .collect();
         assert_eq!(visible, ["rw"]);
     }
 
@@ -181,7 +246,12 @@ imap = { host = "i.example.com", port = 993, tls = "implicit" }
         let c = cfg();
         let a = Authorizer::new(&c);
         let p = Principal::new("c", [id("ghost")], ALL);
-        assert_eq!(a.authorize(&p, &id("ghost"), Action::Read).unwrap_err().code(), ErrorCode::AccountNotFound);
+        assert_eq!(
+            a.authorize(&p, &id("ghost"), Action::Read)
+                .unwrap_err()
+                .code(),
+            ErrorCode::AccountNotFound
+        );
     }
 
     #[test]
@@ -192,7 +262,13 @@ imap = { host = "i.example.com", port = 993, tls = "implicit" }
         c.accounts[1].smtp = None;
         let a = Authorizer::new(&c);
         let p = Principal::new("c", [id("ro"), id("rw")], ALL);
-        assert_eq!(a.authorize(&p, &id("ro"), Action::Send).unwrap_err().code(), ErrorCode::ReadOnlyAccount);
-        assert_eq!(a.authorize(&p, &id("rw"), Action::Send).unwrap_err().code(), ErrorCode::AccessDenied);
+        assert_eq!(
+            a.authorize(&p, &id("ro"), Action::Send).unwrap_err().code(),
+            ErrorCode::ReadOnlyAccount
+        );
+        assert_eq!(
+            a.authorize(&p, &id("rw"), Action::Send).unwrap_err().code(),
+            ErrorCode::AccessDenied
+        );
     }
 }

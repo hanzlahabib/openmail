@@ -32,23 +32,37 @@ impl<T> fmt::Display for Redacted<T> {
 /// Headers that are safe to log: structural/technical only. `Subject`, `From`,
 /// `To`, `Cc`, `Reply-To`, `Authorization` and anything `X-*` carry personal data
 /// or credentials and are intentionally absent.
-pub const LOG_SAFE_HEADERS: &[&str] = &["content-type", "content-transfer-encoding", "date", "message-id", "mime-version"];
+pub const LOG_SAFE_HEADERS: &[&str] = &[
+    "content-type",
+    "content-transfer-encoding",
+    "date",
+    "message-id",
+    "mime-version",
+];
 
 /// Longest header value kept in a log line (long values are usually attacker-chosen noise).
 const MAX_LOGGED_HEADER_VALUE: usize = 128;
 
 pub fn is_log_safe_header(name: &str) -> bool {
-    LOG_SAFE_HEADERS.iter().any(|h| h.eq_ignore_ascii_case(name.trim()))
+    LOG_SAFE_HEADERS
+        .iter()
+        .any(|h| h.eq_ignore_ascii_case(name.trim()))
 }
 
 /// Keeps only allowlisted headers, strips control characters (log injection)
 /// and truncates values on a char boundary.
-pub fn loggable_headers<'a>(headers: impl IntoIterator<Item = (&'a str, &'a str)>) -> Vec<(String, String)> {
+pub fn loggable_headers<'a>(
+    headers: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> Vec<(String, String)> {
     headers
         .into_iter()
         .filter(|(name, _)| is_log_safe_header(name))
         .map(|(name, value)| {
-            let clean: String = value.chars().filter(|c| !c.is_control()).take(MAX_LOGGED_HEADER_VALUE).collect();
+            let clean: String = value
+                .chars()
+                .filter(|c| !c.is_control())
+                .take(MAX_LOGGED_HEADER_VALUE)
+                .collect();
             (name.trim().to_ascii_lowercase(), clean)
         })
         .collect()
@@ -77,7 +91,13 @@ mod tests {
             ("Message-ID", "<1@example.com>"),
             ("DATE", "Mon, 1 Jan 2024"),
         ]);
-        assert_eq!(kept, vec![("message-id".to_owned(), "<1@example.com>".to_owned()), ("date".to_owned(), "Mon, 1 Jan 2024".to_owned())]);
+        assert_eq!(
+            kept,
+            vec![
+                ("message-id".to_owned(), "<1@example.com>".to_owned()),
+                ("date".to_owned(), "Mon, 1 Jan 2024".to_owned())
+            ]
+        );
     }
 
     #[test]
