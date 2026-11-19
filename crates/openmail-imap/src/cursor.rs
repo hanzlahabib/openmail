@@ -83,7 +83,7 @@ mod tests {
             Cursor::decode("%%%").unwrap_err().code(),
             ErrorCode::InvalidInput
         );
-        let short = URL_SAFE_NO_PAD.encode("c1\0INBOX\01");
+        let short = URL_SAFE_NO_PAD.encode("c1\0INBOX\x001");
         assert!(Cursor::decode(&short).is_err());
     }
 }

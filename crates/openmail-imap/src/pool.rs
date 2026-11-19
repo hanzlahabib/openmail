@@ -61,6 +61,14 @@ pub struct Lease {
     account: AccountId,
 }
 
+impl std::fmt::Debug for Lease {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Lease")
+            .field("account", &self.account)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Lease {
     fn session(&mut self) -> &mut ImapSession {
         // Invariant: `session` is Some until `discard`/drop consume the lease.

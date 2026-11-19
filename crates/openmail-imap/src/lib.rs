@@ -1,4 +1,5 @@
 //! openmail-imap — see docs/ARCHITECTURE.md for ownership and contracts.
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 pub mod backend;
 pub mod conn;
 pub mod cursor;

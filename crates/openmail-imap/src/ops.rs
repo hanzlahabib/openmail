@@ -246,6 +246,7 @@ pub fn structure_has_attachment(bs: &async_imap::imap_proto::BodyStructure<'_>) 
 pub const SUMMARY_QUERY: &str =
     "(UID FLAGS RFC822.SIZE INTERNALDATE BODYSTRUCTURE BODY.PEEK[HEADER])";
 
+#[derive(Debug)]
 pub struct FetchedSummary {
     pub summary: MessageSummary,
     pub headers: HeaderInfo,
@@ -306,7 +307,7 @@ pub async fn fetch_summaries(
         .iter()
         .filter_map(|f| summary_from_fetch(f, account, folder, uid_validity))
         .collect();
-    out.sort_by(|a, b| b.summary.reference.uid.cmp(&a.summary.reference.uid));
+    out.sort_by_key(|a| std::cmp::Reverse(a.summary.reference.uid));
     Ok(out)
 }
 
