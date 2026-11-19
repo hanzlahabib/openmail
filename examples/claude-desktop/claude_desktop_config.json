@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "openmail": {
+      "command": "openmail-mcp",
+      "args": ["serve", "--config", "/home/YOU/.config/openmail-mcp/config.toml"],
+      "env": { "OPENMAIL_PERSONAL_PASSWORD": "fake-app-password-do-not-use" }
+    }
+  }
+}

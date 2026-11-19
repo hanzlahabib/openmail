@@ -1,0 +1,26 @@
+services:
+  openmail-mcp:
+    build: .
+    image: openmail-mcp:local
+    user: "10001:10001"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    # Secrets (bearer token, provider credentials) come from a 0600 file you create; never commit it.
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      OPENMAIL_LOG: info
+    volumes:
+      - ./examples/docker/config.toml:/config/config.toml:ro
+    # stdio transport: the MCP client attaches with `docker compose run --rm -T openmail-mcp`
+    # (or `docker run -i`). No listener, so no port and no healthcheck. For the http transport add
+    # OPENMAIL_HTTP_TLS_CERT / _TLS_KEY / _AUTH_TOKEN_FILE, `command: [serve, --transport, http, ...]`
+    # and a TCP healthcheck once the http backend is wired.
+    stdin_open: true
+    healthcheck:
+      disable: true

@@ -1,0 +1,14 @@
+From: broken@example.test
+To: alice@openmail.test
+Subject: Unclosed boundary
+Date: Mon, 02 Mar 2026 10:00:00 +0000
+Message-ID: <bad-1@openmail.test>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="XX"
+
+--XX
+Content-Type: text/plain
+
+part one, never closed
+--XX
+Content-Type: text/pla

@@ -1,0 +1,5 @@
+# Selects the installed stable toolchain with the components CI uses. The MSRV floor is enforced by the CI MSRV job and Cargo.toml `rust-version`; a numeric pin here made rustup install a duplicate toolchain per machine.
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

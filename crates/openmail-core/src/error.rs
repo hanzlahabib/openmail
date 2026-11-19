@@ -36,7 +36,10 @@ pub enum Error {
 
 impl Error {
     pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
-        Self::Coded { code, message: message.into() }
+        Self::Coded {
+            code,
+            message: message.into(),
+        }
     }
 
     pub fn code(&self) -> ErrorCode {

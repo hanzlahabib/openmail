@@ -1,0 +1,20 @@
+From: =?UTF-8?Q?Ren=C3=A9e_Example?= <renee@example.com>
+To: Bob <bob@example.org>, carol@example.org
+Cc: Dan <dan@example.org>
+Subject: =?UTF-8?B?SGVsbG8g8J+RiyB3b3JsZA==?=
+Date: Sat, 20 Nov 2021 14:22:01 -0800
+Message-ID: <alt-1@example.com>
+In-Reply-To: <root@example.com>
+References: <root@example.com> <mid@example.com>
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="b1"
+
+--b1
+Content-Type: text/plain; charset=utf-8
+
+Plain body line
+--b1
+Content-Type: text/html; charset=utf-8
+
+<html><body><p>HTML <b>body</b></p></body></html>
+--b1--
