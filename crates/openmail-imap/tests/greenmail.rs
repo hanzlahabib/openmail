@@ -764,3 +764,31 @@ async fn threading_exact_and_heuristic() {
     let froms: Vec<_> = plain.iter().map(|m| m.from[0].email.as_str()).collect();
     assert_eq!(froms, ["a@example.com", "b@example.com", "c@example.com"]);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hostile_folder_names_cannot_inject_commands_against_a_real_server() {
+    let Some(env) = env(Mode::Implicit, false).await else {
+        return;
+    };
+    let b = seed_three(&env).await;
+    let a = id("alice");
+    let list = b.list_messages(&a, "INBOX", page(10)).await.unwrap();
+    let victim = list.items[0].reference.clone();
+    for hostile in [
+        "INBOX\r\nA9 DELETE Archive",
+        "x\nA9 STORE 1:* +FLAGS (\\Deleted)",
+        "nul\0byte",
+        "q\" A9 DELETE \"Archive",
+    ] {
+        // Whatever the verdict (not found / invalid), it must be a clean error ...
+        assert!(b.list_messages(&a, hostile, page(10)).await.is_err());
+        assert!(b.folder_status(&a, hostile).await.is_err());
+        assert!(b.move_message(&victim, hostile).await.is_err());
+    }
+    // ... and nothing the injected commands would have done may have happened.
+    let folders = b.list_folders(&a).await.unwrap();
+    assert!(folders.iter().any(|f| f.name == "Archive"), "{folders:?}");
+    let inbox = b.list_messages(&a, "INBOX", page(10)).await.unwrap();
+    assert_eq!(inbox.items.len(), 3);
+    assert!(inbox.items.iter().all(|m| !m.flags.deleted));
+}
