@@ -40,6 +40,21 @@ pub fn config() -> Arc<Config> {
     Arc::new(Config::from_toml(CONFIG).unwrap())
 }
 
+/// Same accounts, but `work` grants every write permission so every tool group is registered
+/// (write tools are hidden when no account permits them). Used by the enumerate-every-tool
+/// authorization test, which must keep covering the write tools.
+pub fn config_full_access() -> Arc<Config> {
+    let work_imap = r#"imap = { host = "imap.work.example", port = 993, tls = "implicit" }"#;
+    let widened = format!(
+        "{work_imap}\nsmtp = {{ host = \"smtp.work.example\", port = 587, tls = \"start_tls\" }}\nread_only = false\npermissions = {{ organize = true, drafts = true, send = true }}"
+    );
+    assert!(
+        CONFIG.contains(work_imap),
+        "fixture changed: update config_full_access"
+    );
+    Arc::new(Config::from_toml(&CONFIG.replacen(work_imap, &widened, 1)).unwrap())
+}
+
 pub fn msg_ref(account: &str, uid: u32, validity: u32) -> MessageRef {
     MessageRef {
         account: AccountId::new(account).unwrap(),

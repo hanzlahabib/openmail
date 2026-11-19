@@ -6,7 +6,7 @@ mod fake;
 
 use std::time::Duration;
 
-use fake::{FakeBackend, INJECTION, UID_VALIDITY, config, msg_ref};
+use fake::{FakeBackend, INJECTION, UID_VALIDITY, config, config_full_access, msg_ref};
 use openmail_mcp::{build_server, serve_io};
 use rmcp::model::{CallToolRequestParams, CallToolResult, ProtocolVersion};
 use rmcp::service::{RoleClient, RunningService, ServiceError};
@@ -16,8 +16,12 @@ use serde_json::{Value, json};
 type Client = RunningService<RoleClient, ()>;
 
 async fn connect() -> Client {
+    connect_with(config_full_access()).await
+}
+
+async fn connect_with(cfg: std::sync::Arc<openmail_core::config::Config>) -> Client {
     let (server_io, client_io) = tokio::io::duplex(64 * 1024);
-    let server = build_server(config(), FakeBackend::default());
+    let server = build_server(cfg, FakeBackend::default());
     tokio::spawn(async move {
         if let Ok(running) = rmcp::ServiceExt::serve(server, server_io).await {
             let _ = running.waiting().await;
@@ -118,6 +122,35 @@ async fn initialize_negotiates_and_advertises_tools_only() {
     c.cancel().await.unwrap();
 }
 
+/// With no account granting organize/drafts/send, write tools are not even advertised.
+#[tokio::test]
+async fn read_only_config_advertises_only_read_tools() {
+    let (server_io, client_io) = tokio::io::duplex(64 * 1024);
+    let server = build_server(config(), FakeBackend::default());
+    tokio::spawn(async move {
+        if let Ok(running) = rmcp::ServiceExt::serve(server, server_io).await {
+            let _ = running.waiting().await;
+        }
+    });
+    let c = ().serve(client_io).await.unwrap();
+    let names: Vec<String> = c
+        .list_all_tools()
+        .await
+        .unwrap()
+        .iter()
+        .map(|t| t.name.to_string())
+        .collect();
+    assert!(!names.is_empty());
+    for n in &names {
+        assert!(
+            !WRITE_TOOLS.contains(&n.as_str()),
+            "{n} advertised on a read-only config"
+        );
+    }
+    assert!(names.iter().any(|n| n == "mail_search_messages"));
+    c.cancel().await.unwrap();
+}
+
 #[tokio::test]
 async fn tools_list_has_strict_schemas_and_read_only_annotations() {
     let c = connect().await;
@@ -199,7 +232,7 @@ async fn tools_list_has_strict_schemas_and_read_only_annotations() {
 
 #[tokio::test]
 async fn list_accounts_never_leaks_credentials() {
-    let c = connect().await;
+    let c = connect_with(config()).await;
     let v = ok(&c, "mail_list_accounts", json!({})).await;
     let accounts = v["accounts"].as_array().unwrap();
     assert_eq!(accounts.len(), 2);

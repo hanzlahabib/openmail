@@ -3,7 +3,7 @@
 use std::future::Future;
 use std::sync::Arc;
 
-use openmail_core::config::{AccountConfig, Config, Limits};
+use openmail_core::config::{AccountConfig, Config, Limits, Permissions};
 use openmail_core::ids::{AccountId, MessageRef};
 use openmail_core::model::PageRequest;
 use openmail_core::{Error, ErrorCode};
@@ -127,6 +127,7 @@ impl<B: FullBackend> OpenMailServer<B> {
         rate_limits: RateLimits,
     ) -> Self {
         let limits = config.limits.clone();
+        let tool_router = Self::registered_tools(&config);
         Self {
             config,
             backend,
@@ -138,12 +139,31 @@ impl<B: FullBackend> OpenMailServer<B> {
                 rate_limits.per_account,
             )),
             outgoing: None,
-            tool_router: Self::read_router()
-                + Self::organize_router()
-                + Self::draft_router()
-                + Self::send_router()
-                + Self::brief_router(),
+            tool_router,
         }
+    }
+
+    /// Registers a write tool group only when some account grants that permission. Per-call
+    /// authorization remains the enforcement; not advertising tools that can never succeed
+    /// shrinks the attack surface and the model's tool list for read-only deployments.
+    fn registered_tools(config: &Config) -> ToolRouter<Self> {
+        let granted = |has: fn(&Permissions) -> bool| {
+            config
+                .accounts
+                .iter()
+                .any(|a| !a.read_only && has(&a.permissions))
+        };
+        let mut router = Self::read_router() + Self::brief_router();
+        if granted(|p| p.organize) {
+            router += Self::organize_router();
+        }
+        if granted(|p| p.drafts) {
+            router += Self::draft_router();
+        }
+        if granted(|p| p.send) {
+            router += Self::send_router();
+        }
+        router
     }
 
     /// Enable `mail_send_approved` / `mail_forward_approved`. Without it those tools exist but

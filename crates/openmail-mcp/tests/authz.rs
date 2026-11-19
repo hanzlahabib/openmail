@@ -7,7 +7,7 @@ mod fake;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use fake::{FakeBackend, UID_VALIDITY, config, msg_ref};
+use fake::{FakeBackend, UID_VALIDITY, config_full_access, msg_ref};
 use openmail_core::ids::AccountId;
 use openmail_core::model::Untrusted;
 use openmail_mcp::{RateLimits, build_server_with};
@@ -34,7 +34,7 @@ async fn connect(
 ) -> (Client, Arc<AtomicUsize>) {
     let calls = Arc::clone(&backend.calls);
     let (server_io, client_io) = tokio::io::duplex(64 * 1024);
-    let server = build_server_with(config(), backend, principal, limits);
+    let server = build_server_with(config_full_access(), backend, principal, limits);
     tokio::spawn(async move {
         if let Ok(running) = server.serve(server_io).await {
             let _ = running.waiting().await;
