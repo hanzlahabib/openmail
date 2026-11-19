@@ -1,9 +1,11 @@
 //! In-memory `MailBackend` + config used only by tests.
 #![allow(clippy::unwrap_used, clippy::expect_used, dead_code)]
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
-use openmail_core::backend::MailBackend;
+use openmail_core::backend::{
+    AttachmentSource, MailBackend, MailDrafts, MailOrganizer, SentFolder,
+};
 use openmail_core::config::Config;
 use openmail_core::ids::{AccountId, MessageRef};
 use openmail_core::model::*;
@@ -72,6 +74,17 @@ fn summary(uid: u32, subject: &str) -> MessageSummary {
 
 pub struct FakeBackend {
     pub messages: Vec<MessageSummary>,
+    /// Fully specified messages (for example drafts) looked up before `messages`.
+    pub extra_messages: Vec<Message>,
+    /// What `get_attachment` returns.
+    pub attachment_filename: String,
+    pub attachment_bytes: Vec<u8>,
+    /// Write operations seen, in order, as `"op:detail"` strings.
+    pub writes: Arc<Mutex<Vec<String>>>,
+    pub created_drafts: Arc<Mutex<Vec<DraftInput>>>,
+    pub sent_copies: Arc<Mutex<Vec<Vec<u8>>>>,
+    /// Makes `append_sent` fail, to prove a Sent-folder failure is not fatal.
+    pub fail_append_sent: bool,
     /// Number of backend calls made; authorization tests assert it stays 0 on denial.
     pub calls: Arc<AtomicUsize>,
 }
@@ -91,6 +104,13 @@ impl Default for FakeBackend {
                 summary(3, INJECTION),
             ],
             calls: Arc::new(AtomicUsize::new(0)),
+            extra_messages: Vec::new(),
+            attachment_filename: "inv.pdf".into(),
+            attachment_bytes: b"%PDF-1.4 hello".to_vec(),
+            writes: Arc::default(),
+            created_drafts: Arc::default(),
+            sent_copies: Arc::default(),
+            fail_append_sent: false,
         }
     }
 }
@@ -191,6 +211,13 @@ impl MailBackend for FakeBackend {
         if r.uid_validity != UID_VALIDITY {
             return Err(Error::new(ErrorCode::StaleReference, "UIDVALIDITY changed"));
         }
+        if let Some(m) = self
+            .extra_messages
+            .iter()
+            .find(|m| m.summary.reference == *r)
+        {
+            return Ok(m.clone());
+        }
         let s = self
             .messages
             .iter()
@@ -240,5 +267,91 @@ impl MailBackend for FakeBackend {
     async fn get_thread(&self, _: &MessageRef) -> Result<Vec<MessageSummary>> {
         self.hit();
         Ok(self.messages.clone())
+    }
+}
+
+impl FakeBackend {
+    fn log(&self, entry: String) {
+        self.hit();
+        self.writes.lock().unwrap().push(entry);
+    }
+}
+
+impl MailOrganizer for FakeBackend {
+    async fn set_seen(&self, r: &MessageRef, seen: bool) -> Result<()> {
+        self.log(format!("seen:{}:{seen}", r.uid));
+        Ok(())
+    }
+    async fn set_flagged(&self, r: &MessageRef, flagged: bool) -> Result<()> {
+        self.log(format!("flagged:{}:{flagged}", r.uid));
+        Ok(())
+    }
+    async fn move_message(&self, r: &MessageRef, dest: &str) -> Result<MessageRef> {
+        self.log(format!("move:{}:{dest}", r.uid));
+        Ok(MessageRef {
+            folder: dest.to_owned(),
+            uid: r.uid + 100,
+            ..r.clone()
+        })
+    }
+}
+
+impl MailDrafts for FakeBackend {
+    async fn create_draft(&self, account: &AccountId, d: DraftInput) -> Result<MessageRef> {
+        self.log("create_draft".into());
+        self.created_drafts.lock().unwrap().push(d);
+        Ok(MessageRef {
+            account: account.clone(),
+            folder: "Drafts".into(),
+            uid_validity: UID_VALIDITY,
+            uid: 900,
+        })
+    }
+    async fn update_draft(&self, r: &MessageRef, d: DraftInput) -> Result<MessageRef> {
+        self.log(format!("update_draft:{}", r.uid));
+        self.created_drafts.lock().unwrap().push(d);
+        Ok(MessageRef {
+            uid: r.uid + 1,
+            ..r.clone()
+        })
+    }
+    async fn delete_draft(&self, r: &MessageRef) -> Result<()> {
+        self.log(format!("delete_draft:{}", r.uid));
+        Ok(())
+    }
+}
+
+impl AttachmentSource for FakeBackend {
+    async fn get_attachment(
+        &self,
+        _: &MessageRef,
+        index: u32,
+        max_bytes: usize,
+    ) -> Result<AttachmentData> {
+        self.hit();
+        if self.attachment_bytes.len() > max_bytes {
+            return Err(Error::new(ErrorCode::LimitExceeded, "too large"));
+        }
+        Ok(AttachmentData {
+            meta: AttachmentMeta {
+                index,
+                filename: Some(self.attachment_filename.clone()),
+                content_type: "application/pdf".into(),
+                size: u32::try_from(self.attachment_bytes.len()).unwrap(),
+                inline: false,
+            },
+            bytes: self.attachment_bytes.clone(),
+        })
+    }
+}
+
+impl SentFolder for FakeBackend {
+    async fn append_sent(&self, _: &AccountId, rfc822: Vec<u8>) -> Result<()> {
+        self.hit();
+        if self.fail_append_sent {
+            return Err(Error::new(ErrorCode::ConnectionFailed, "append failed"));
+        }
+        self.sent_copies.lock().unwrap().push(rfc822);
+        Ok(())
     }
 }

@@ -9,6 +9,9 @@ use serde_json::json;
 pub struct ToolError {
     pub code: ErrorCode,
     pub message: String,
+    /// Extra machine-readable fields merged into the `error` object (for example the
+    /// `request_id` of a pending approval). Only server-generated values go here.
+    pub details: Vec<(&'static str, serde_json::Value)>,
 }
 
 impl ToolError {
@@ -16,7 +19,14 @@ impl ToolError {
         Self {
             code,
             message: message.into(),
+            details: Vec::new(),
         }
+    }
+
+    #[must_use]
+    pub fn with_detail(mut self, key: &'static str, value: impl Into<serde_json::Value>) -> Self {
+        self.details.push((key, value.into()));
+        self
     }
 
     pub fn invalid(message: impl Into<String>) -> Self {
@@ -76,7 +86,13 @@ impl IntoCallToolResult for ToolError {
     fn into_call_tool_result(self) -> Result<CallToolResponse, rmcp::ErrorData> {
         // ErrorCode serializes SCREAMING_SNAKE_CASE; falls back to INTERNAL only if serde fails.
         let code = serde_json::to_value(self.code).unwrap_or_else(|_| json!("INTERNAL"));
-        let payload = json!({ "error": { "code": code, "message": self.message } });
+        let mut error = json!({ "code": code, "message": self.message });
+        if let Some(obj) = error.as_object_mut() {
+            for (k, v) in self.details {
+                obj.insert((*k).to_owned(), v);
+            }
+        }
+        let payload = json!({ "error": error });
         Ok(CallToolResult::structured_error(payload).into())
     }
 }

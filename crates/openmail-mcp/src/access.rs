@@ -48,3 +48,14 @@ pub fn stdio_principal(config: &Config) -> Principal {
         [Action::Read],
     )
 }
+
+/// Resolves the calling principal from the transport's per-request data (HTTP bearer auth).
+///
+/// `extensions` is the rmcp request-context bag. For Streamable HTTP rmcp inserts the original
+/// `http::request::Parts` into it, so an HTTP resolver reads headers or middleware-set extensions
+/// via `extensions.get::<http::request::Parts>()`. `None` means "unauthenticated" and every tool
+/// call is then denied before any backend call. stdio never uses a resolver: it keeps its fixed
+/// principal ([`stdio_principal`]).
+pub trait PrincipalResolver: Send + Sync + 'static {
+    fn resolve(&self, extensions: &rmcp::model::Extensions) -> Option<Principal>;
+}
