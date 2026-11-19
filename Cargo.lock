@@ -106,6 +106,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "openmail-oauth"
+version = "0.1.0"
+dependencies = [
+ "openmail-core",
+]
+
+[[package]]
+name = "openmail-observe"
+version = "0.1.0"
+dependencies = [
+ "openmail-core",
+]
+
+[[package]]
+name = "openmail-remote"
+version = "0.1.0"
+dependencies = [
+ "openmail-core",
+]
+
+[[package]]
 name = "openmail-security"
 version = "0.1.0"
 dependencies = [
