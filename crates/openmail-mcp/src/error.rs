@@ -52,6 +52,9 @@ fn fixed_message(code: ErrorCode) -> Option<&'static str> {
         ErrorCode::DeliveryUncertain => "delivery state is uncertain; do not retry blindly",
         ErrorCode::Unsupported => "the mail server does not support this operation",
         ErrorCode::Internal => "internal error",
+        ErrorCode::CredentialMissing => {
+            "the mailbox credential is not configured on the server; the operator must set it"
+        }
         ErrorCode::AccountNotFound
         | ErrorCode::AccessDenied
         | ErrorCode::ReadOnlyAccount

@@ -157,7 +157,9 @@ pub fn check_config(file: &ConfigFile) -> (Option<Config>, Vec<Check>) {
             checks.push(Check::ok("config permissions", format!("mode {mode:03o}")));
         }
     }
-    match Config::from_toml(text) {
+    match Config::from_toml(text)
+        .and_then(|c| c.with_dropins(&Config::dropin_dir(std::path::Path::new(&file.path))))
+    {
         Ok(cfg) => {
             checks.push(Check::ok(
                 "config valid",
@@ -189,6 +191,9 @@ pub fn check_credentials<S: SecretSource>(cfg: &Config, secrets: &S) -> Vec<Chec
                 (Ok(_), CredentialRef::Env { var }) => {
                     Check::ok(name, format!("env var {var} is set"))
                 }
+                (Ok(_), CredentialRef::File { path }) => {
+                    Check::ok(name, format!("secret file {path} readable"))
+                }
                 (Ok(_), CredentialRef::Keyring { service, user }) => {
                     Check::ok(name, format!("keyring entry {service}/{user} readable"))
                 }
@@ -196,6 +201,11 @@ pub fn check_credentials<S: SecretSource>(cfg: &Config, secrets: &S) -> Vec<Chec
                     name,
                     format!("env var {var} unavailable ({:?})", e.code()),
                     format!("export {var} in the environment that launches openmail-mcp"),
+                ),
+                (Err(e), CredentialRef::File { path }) => Check::fail(
+                    name,
+                    format!("secret file {path} unavailable ({:?})", e.code()),
+                    "create it with `openmail-mcp accounts add` or `chmod 600` it and put only the password inside",
                 ),
                 (Err(e), CredentialRef::Keyring { service, user }) => Check::fail(
                     name,
@@ -424,7 +434,7 @@ imap = { host = "imap.bad.example", port = 993, tls = "implicit" }
         fn resolve(&self, r: &CredentialRef) -> Result<SecretString> {
             match r {
                 CredentialRef::Env { .. } => Ok(SecretString::from(SECRET)),
-                CredentialRef::Keyring { .. } => Err(Error::new(
+                CredentialRef::Keyring { .. } | CredentialRef::File { .. } => Err(Error::new(
                     ErrorCode::AuthFailed,
                     format!("backend said {SECRET}"),
                 )),

@@ -86,7 +86,7 @@ pub fn run(args: BriefArgs) -> Result<()> {
 fn load_config(path: &Path) -> Result<Config> {
     let text = std::fs::read_to_string(path)
         .with_context(|| format!("reading config {}", path.display()))?;
-    let config = Config::from_toml(&text)?;
+    let config = Config::from_toml(&text)?.with_dropins(&Config::dropin_dir(path))?;
     config.validate()?;
     Ok(config)
 }

@@ -15,7 +15,7 @@ in-process TLS (rustls). It refuses to start unless **both** TLS and authenticat
 | `OPENMAIL_HTTP_PUBLIC_URL` | public base URL (`https://mail-mcp.example.com`), advertised in `WWW-Authenticate`; its host joins the `Host` allowlist |
 | `OPENMAIL_HTTP_ALLOWED_HOSTS`, `_ALLOWED_ORIGINS` | extra comma-separated `Host` values / browser `Origin`s to accept |
 
-Exactly one of token file or JWT may be set. Token scopes `mail:read|organize|draft|send|delete`
+Configure exactly one authentication mode: static token file, external JWT, or built-in OAuth. Token scopes `mail:read|organize|draft|send|delete`
 grant those actions; the accounts a token may touch come only from the scope mapping, and account
 permissions in the config still apply on top. A token limited to account A cannot name account B
 (the answer is the same `ACCESS_DENIED` as for an unknown account).
@@ -100,21 +100,28 @@ server {
     ssl_protocols TLSv1.2 TLSv1.3;
 
     client_max_body_size 1m;
+    proxy_ssl_trusted_certificate /etc/openmail/tls/ca.pem;
+    proxy_ssl_verify on;
 
-    location /mcp {
+    location = /mcp {
         proxy_pass https://127.0.0.1:8765;
-        proxy_ssl_trusted_certificate /etc/openmail/tls/ca.pem;
-        proxy_ssl_verify on;
         proxy_http_version 1.1;
         proxy_set_header Connection "";
         proxy_buffering off;          # streaming responses
         proxy_read_timeout 3600s;
         proxy_set_header Authorization $http_authorization;
     }
-    location = /healthz { proxy_pass https://127.0.0.1:8765; proxy_ssl_trusted_certificate /etc/openmail/tls/ca.pem; }
-    location / { return 404; }        # do not expose /readyz or anything else publicly
+    location ~ ^/(?:[.]well-known/oauth-(?:protected-resource|authorization-server)|authorize|token|register|jwks[.]json|healthz)$ {
+        proxy_pass https://127.0.0.1:8765;
+    }
+    location / { return 404; }
 }
 ```
+
+The upstream certificate must be valid for `127.0.0.1` as shown. If it uses a DNS name,
+configure `proxy_ssl_name` for that certificate name and enable `proxy_ssl_server_name`.
+For a static-token deployment, retain protected-resource discovery and health checks and omit
+the built-in authorization server routes.
 
 ## Service user and systemd unit
 
@@ -200,4 +207,4 @@ curl -si -H "Authorization: Bearer $(cat /etc/openmail/token)" -X POST \
 
 - No automated test of the proxy snippets or the unit file; no mTLS; no per-client static tokens
   (use JWT mode for per-client identity); no systemd socket activation; JWT mode is tested against
-  a local JWKS only, not a real identity provider; no dynamic client registration endpoint.
+  a local JWKS in the test suite. Built-in OAuth provides dynamic client registration at `/register`.

@@ -163,6 +163,47 @@ fn auth_failed(message: String) -> Error {
     Error::new(ErrorCode::AuthFailed, message)
 }
 
+/// The secret is not there at all: an operator problem, not a rejected login.
+fn missing(message: String) -> Error {
+    Error::new(ErrorCode::CredentialMissing, message)
+}
+
+/// Docker/Kubernetes-style secret file: the whole file is the secret (one trailing newline
+/// trimmed). On Unix the file must not be readable by group or others.
+fn read_secret_file(path: &str) -> Result<SecretString> {
+    let p = std::path::Path::new(path);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let meta = std::fs::metadata(p).map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => missing(format!("secret file '{path}' does not exist")),
+            _ => missing(format!(
+                "secret file '{path}' cannot be read ({})",
+                e.kind()
+            )),
+        })?;
+        if meta.permissions().mode() & 0o077 != 0 {
+            return Err(Error::new(
+                ErrorCode::ConfigInvalid,
+                format!("secret file '{path}' is accessible to other users; chmod 600 it"),
+            ));
+        }
+    }
+    let text = std::fs::read_to_string(p).map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => missing(format!("secret file '{path}' does not exist")),
+        _ => missing(format!(
+            "secret file '{path}' cannot be read ({})",
+            e.kind()
+        )),
+    })?;
+    let secret = text.strip_suffix('\n').unwrap_or(&text);
+    let secret = secret.strip_suffix('\r').unwrap_or(secret);
+    if secret.is_empty() {
+        return Err(missing(format!("secret file '{path}' is empty")));
+    }
+    Ok(SecretString::from(secret.to_owned()))
+}
+
 impl<E: EnvProvider, K: KeyringProvider> SecretSource for EnvKeyringSecretSource<E, K> {
     fn resolve(&self, reference: &CredentialRef) -> Result<SecretString> {
         match reference {
@@ -171,16 +212,17 @@ impl<E: EnvProvider, K: KeyringProvider> SecretSource for EnvKeyringSecretSource
                     return Err(Error::new(ErrorCode::ConfigInvalid, "credential env var name is empty or contains '=' or NUL"));
                 }
                 match self.env.var(var) {
-                    Ok(v) if v.is_empty() => Err(auth_failed(format!("environment variable '{var}' is set but empty"))),
+                    Ok(v) if v.is_empty() => Err(missing(format!("environment variable '{var}' is set but empty"))),
                     Ok(v) => Ok(SecretString::from(v)),
-                    Err(VarError::NotPresent) => Err(auth_failed(format!("environment variable '{var}' is not set"))),
+                    Err(VarError::NotPresent) => Err(missing(format!("environment variable '{var}' is not set"))),
                     Err(VarError::NotUnicode(_)) => Err(auth_failed(format!("environment variable '{var}' is not valid UTF-8"))),
                 }
             }
+            CredentialRef::File { path } => read_secret_file(path),
             CredentialRef::Keyring { service, user } => match self.keyring.password(service, user) {
-                Ok(v) if v.is_empty() => Err(auth_failed(format!("keyring entry '{service}'/'{user}' is empty"))),
+                Ok(v) if v.is_empty() => Err(missing(format!("keyring entry '{service}'/'{user}' is empty"))),
                 Ok(v) => Ok(SecretString::from(v)),
-                Err(KeyringFailure::NoEntry) => Err(auth_failed(format!("no keyring entry for service '{service}', user '{user}'"))),
+                Err(KeyringFailure::NoEntry) => Err(missing(format!("no keyring entry for service '{service}', user '{user}'"))),
                 Err(KeyringFailure::Unavailable) => Err(auth_failed(
                     "OS keyring is unavailable or locked (no Secret Service or kernel keyring reachable; use kind = \"env\" instead)".to_owned(),
                 )),
@@ -251,7 +293,7 @@ mod tests {
     fn missing_env_names_the_var_not_a_value() {
         let s = source(vec![], Err(KeyringFailure::NoEntry));
         let e = s.resolve(&env_ref("OPENMAIL_MISSING")).unwrap_err();
-        assert_eq!(e.code(), ErrorCode::AuthFailed);
+        assert_eq!(e.code(), ErrorCode::CredentialMissing);
         assert!(e.to_string().contains("OPENMAIL_MISSING"));
     }
 
@@ -260,7 +302,7 @@ mod tests {
         let s = source(vec![("E", Ok(String::new()))], Err(KeyringFailure::NoEntry));
         assert_eq!(
             s.resolve(&env_ref("E")).unwrap_err().code(),
-            ErrorCode::AuthFailed
+            ErrorCode::CredentialMissing
         );
         #[cfg(unix)]
         {
@@ -297,8 +339,13 @@ mod tests {
             KeyringFailure::BadEncoding,
             KeyringFailure::Other,
         ] {
+            let expected = if matches!(f, KeyringFailure::NoEntry) {
+                ErrorCode::CredentialMissing
+            } else {
+                ErrorCode::AuthFailed
+            };
             let e = source(vec![], Err(f)).resolve(&kr_ref()).unwrap_err();
-            assert_eq!(e.code(), ErrorCode::AuthFailed);
+            assert_eq!(e.code(), expected);
             assert!(!e.to_string().contains(CANARY));
         }
         assert_eq!(
@@ -306,7 +353,7 @@ mod tests {
                 .resolve(&kr_ref())
                 .unwrap_err()
                 .code(),
-            ErrorCode::AuthFailed
+            ErrorCode::CredentialMissing
         );
     }
 
@@ -378,7 +425,50 @@ imap = { host = "imap.example.com", port = 993, tls = "implicit" }
             s.resolve(&env_ref("OPENMAIL_DEFINITELY_UNSET_VAR_X"))
                 .unwrap_err()
                 .code(),
-            ErrorCode::AuthFailed
+            ErrorCode::CredentialMissing
         );
+    }
+
+    #[test]
+    fn secret_files_are_read_trimmed_and_refused_when_missing_empty_or_open() {
+        use secrecy::ExposeSecret;
+        let dir = std::env::temp_dir().join(format!("om-secret-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file_ref = |name: &str| CredentialRef::File {
+            path: dir.join(name).to_string_lossy().into_owned(),
+        };
+        let write = |name: &str, body: &str, mode: u32| {
+            let p = dir.join(name);
+            std::fs::write(&p, body).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&p, std::fs::Permissions::from_mode(mode)).unwrap();
+            }
+            let _ = mode;
+        };
+        let s = EnvKeyringSecretSource::new();
+        write("ok", "pw-123\n", 0o600);
+        assert_eq!(
+            s.resolve(&file_ref("ok")).unwrap().expose_secret(),
+            "pw-123"
+        );
+        write("empty", "\n", 0o600);
+        assert_eq!(
+            s.resolve(&file_ref("empty")).unwrap_err().code(),
+            ErrorCode::CredentialMissing
+        );
+        assert_eq!(
+            s.resolve(&file_ref("absent")).unwrap_err().code(),
+            ErrorCode::CredentialMissing
+        );
+        #[cfg(unix)]
+        {
+            write("open", "pw", 0o644);
+            let e = s.resolve(&file_ref("open")).unwrap_err();
+            assert_eq!(e.code(), ErrorCode::ConfigInvalid);
+            assert!(!e.to_string().contains("pw-123"));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

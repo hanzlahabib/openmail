@@ -41,8 +41,18 @@ pub enum AuthMethod {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CredentialRef {
-    Env { var: String },
-    Keyring { service: String, user: String },
+    Env {
+        var: String,
+    },
+    /// A file holding only the secret (Docker/Kubernetes secrets, or `accounts add`'s store).
+    /// Must not be group/world readable.
+    File {
+        path: String,
+    },
+    Keyring {
+        service: String,
+        user: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -149,6 +159,49 @@ impl Config {
             .map_err(|e| Error::new(ErrorCode::ConfigInvalid, e.message().to_owned()))?;
         cfg.validate()?;
         Ok(cfg)
+    }
+
+    /// `<dir of the main config>/accounts.d`: one TOML file per mailbox, same format as the main
+    /// file, so mailboxes can be added or removed without editing the main config.
+    pub fn dropin_dir(main_config: &std::path::Path) -> std::path::PathBuf {
+        main_config.with_file_name("accounts.d")
+    }
+
+    /// Merge every `*.toml` in `dir` (sorted by name) into this config. Only their `[[account]]`
+    /// tables count; limits and version of the main file win. A broken drop-in is an error naming
+    /// the file (never skipped silently: a vanished mailbox would look like "no activity"), and a
+    /// duplicate account id is rejected. A missing directory is fine.
+    pub fn with_dropins(mut self, dir: &std::path::Path) -> Result<Self> {
+        let bad = |m: String| Error::new(ErrorCode::ConfigInvalid, m);
+        let entries = match std::fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(self),
+            Err(e) => return Err(bad(format!("reading {}: {}", dir.display(), e.kind()))),
+        };
+        let mut files: Vec<std::path::PathBuf> = entries
+            .filter_map(std::result::Result::ok)
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "toml"))
+            .collect();
+        files.sort();
+        for path in files {
+            let text = std::fs::read_to_string(&path)
+                .map_err(|e| bad(format!("reading {}: {}", path.display(), e.kind())))?;
+            let extra: Self = toml::from_str(&text)
+                .map_err(|e| bad(format!("{}: {}", path.display(), e.message())))?;
+            for account in extra.accounts {
+                if self.accounts.iter().any(|a| a.id == account.id) {
+                    return Err(bad(format!(
+                        "{}: account '{}' is already defined",
+                        path.display(),
+                        account.id
+                    )));
+                }
+                self.accounts.push(account);
+            }
+        }
+        self.validate()?;
+        Ok(self)
     }
 
     pub fn account(&self, id: &AccountId) -> Result<&AccountConfig> {

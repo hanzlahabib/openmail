@@ -51,6 +51,7 @@ fn credential_label(c: &CredentialRef) -> String {
     // Names a location, never a secret value.
     match c {
         CredentialRef::Env { var } => format!("env:{var}"),
+        CredentialRef::File { path } => format!("file:{path}"),
         CredentialRef::Keyring { service, user } => format!("keyring:{service}/{user}"),
     }
 }
@@ -221,13 +222,51 @@ where
 pub fn run(args: AccountsArgs) -> anyhow::Result<()> {
     let text = std::fs::read_to_string(&args.config)
         .with_context(|| format!("reading {}", args.config.display()))?;
-    let cfg = Config::from_toml(&text).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let cfg = Config::from_toml(&text)
+        .and_then(|c| c.with_dropins(&Config::dropin_dir(&args.config)))
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     match args.action {
         AccountsAction::List => {
             // CLI output channel, not library logging.
             #[allow(clippy::print_stdout)]
             {
                 print!("{}", render_list(&cfg));
+            }
+            Ok(())
+        }
+        AccountsAction::Add(add) => {
+            let password = if add.password_stdin {
+                let mut line = String::new();
+                std::io::stdin()
+                    .read_line(&mut line)
+                    .context("reading the password from stdin")?;
+                line.trim_end_matches(['\r', '\n']).to_owned()
+            } else {
+                rpassword::prompt_password(format!(
+                    "IMAP password for {} (input hidden): ",
+                    add.email
+                ))
+                .context("reading the password")?
+            };
+            let layout = crate::account_store::Layout::beside(&args.config);
+            crate::account_store::add(&layout, &cfg, &add, &password)?;
+            #[allow(clippy::print_stdout)]
+            {
+                println!(
+                    "Added `{}`. Restart the server, then check it with: openmail-mcp accounts test {}",
+                    add.id, add.id
+                );
+            }
+            Ok(())
+        }
+        AccountsAction::Remove { id } => {
+            let layout = crate::account_store::Layout::beside(&args.config);
+            crate::account_store::remove(&layout, &id)?;
+            #[allow(clippy::print_stdout)]
+            {
+                println!(
+                    "Removed `{id}` from OpenMail (config and secret file only). The mailbox and its mail on the server are untouched."
+                );
             }
             Ok(())
         }
@@ -301,6 +340,7 @@ mod tests {
                 "a2" => Ok(ConnectionReport {
                     account: account.clone(),
                     imap_ok: true,
+                    imap_error_code: None,
                     smtp_ok: Some(false),
                     capabilities: vec!["IDLE".into()],
                     detail: None,
@@ -308,6 +348,7 @@ mod tests {
                 _ => Ok(ConnectionReport {
                     account: account.clone(),
                     imap_ok: true,
+                    imap_error_code: None,
                     smtp_ok: None,
                     capabilities: vec!["IDLE".into(), "UIDPLUS".into()],
                     detail: None,

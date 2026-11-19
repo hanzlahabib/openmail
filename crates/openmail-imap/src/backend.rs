@@ -324,6 +324,7 @@ impl MailBackend for ImapBackend {
             Ok(capabilities) => ConnectionReport {
                 account: account.clone(),
                 imap_ok: true,
+                imap_error_code: None,
                 smtp_ok: None,
                 capabilities,
                 detail: None,
@@ -331,6 +332,7 @@ impl MailBackend for ImapBackend {
             Err(e) => ConnectionReport {
                 account: account.clone(),
                 imap_ok: false,
+                imap_error_code: Some(e.code()),
                 smtp_ok: None,
                 capabilities: Vec::new(),
                 detail: Some(e.to_string()),

@@ -1,5 +1,6 @@
 //! Tool output types: deterministic field order, typed schemas, and explicit
 //! `UntrustedText` for everything that originates in a mailbox.
+use openmail_core::ErrorCode;
 use openmail_core::model::{self, Untrusted};
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -51,29 +52,55 @@ pub struct ConnectionOut {
     pub capabilities: Vec<String>,
     /// Fixed diagnostic chosen by this server from the check results; never server text.
     pub detail: Option<&'static str>,
+    /// Machine-readable classification of an IMAP failure: `credential_missing`, `auth_rejected`,
+    /// `connection_failed`, `timeout`, `config_invalid` or `other`. Null when IMAP is ok.
+    pub failure: Option<&'static str>,
 }
 
 impl ConnectionOut {
-    /// The backend's free-text `detail` is deliberately dropped: it can echo server banners or
-    /// error text (security review F3). The booleans carry the outcome; the operator log keeps
-    /// the detail.
+    /// Expose only fixed diagnostics. Backend details can contain provider-supplied text.
     pub fn from_report(r: model::ConnectionReport) -> Self {
-        let detail = if let Some(d) = &r.detail {
-            tracing::debug!(account = %r.account, detail = %d, "connection report detail withheld from client");
-            Some(if r.imap_ok && r.smtp_ok != Some(false) {
-                "connection check passed with warnings; see the operator log"
-            } else {
-                "connection check failed; see imap_ok and smtp_ok"
-            })
-        } else {
-            None
+        let detail = match (r.imap_ok, r.imap_error_code, r.smtp_ok) {
+            (false, Some(ErrorCode::CredentialMissing), _) => Some(
+                "No mailbox credential is configured on the server for this account (this is the mailbox login, not your ChatGPT or OpenMail login); the operator must add it",
+            ),
+            (false, Some(ErrorCode::AuthFailed), _) => {
+                Some("IMAP authentication failed; check the mailbox credential and login settings")
+            }
+            (false, Some(ErrorCode::Timeout), _) => Some("IMAP connection check timed out"),
+            (false, Some(ErrorCode::ConnectionFailed), _) => {
+                Some("IMAP connection failed; check the host, port, network and TLS settings")
+            }
+            (false, _, _) => Some("IMAP connection check failed; see the operator log"),
+            (true, _, Some(false)) => Some("SMTP connection check failed; see the operator log"),
+            (true, _, _) if r.detail.is_some() => {
+                Some("connection check passed with warnings; see the operator log")
+            }
+            _ => None,
         };
+        let failure = (!r.imap_ok).then_some(match r.imap_error_code {
+            Some(ErrorCode::CredentialMissing) => "credential_missing",
+            Some(ErrorCode::AuthFailed) => "auth_rejected",
+            Some(ErrorCode::ConnectionFailed) => "connection_failed",
+            Some(ErrorCode::Timeout) => "timeout",
+            Some(ErrorCode::ConfigInvalid) => "config_invalid",
+            _ => "other",
+        });
+        if !r.imap_ok || r.smtp_ok == Some(false) {
+            tracing::warn!(
+                account = %r.account,
+                imap_error_code = ?r.imap_error_code,
+                smtp_ok = ?r.smtp_ok,
+                "mail connection check failed"
+            );
+        }
         Self {
             account: r.account.to_string(),
             imap_ok: r.imap_ok,
             smtp_ok: r.smtp_ok,
             capabilities: crate::sanitize::safe_capabilities(r.capabilities),
             detail,
+            failure,
         }
     }
 }
