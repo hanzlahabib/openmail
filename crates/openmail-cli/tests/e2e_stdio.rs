@@ -326,10 +326,16 @@ async fn single_account_full_flow() {
         unknown.is_error,
         "unknown account must be an error: {unknown:?}"
     );
+    // Authorization runs before lookup, so an unknown account is reported exactly like a
+    // forbidden one and cannot be used to probe which accounts exist.
     assert!(
-        unknown.raw.contains("ACCOUNT_NOT_FOUND")
-            || unknown.raw.to_lowercase().contains("unknown account"),
-        "{}",
+        unknown.raw.contains("ACCESS_DENIED"),
+        "unknown account must be ACCESS_DENIED, not an existence oracle: {}",
+        unknown.raw
+    );
+    assert!(
+        !unknown.raw.contains("ACCOUNT_NOT_FOUND"),
+        "must not reveal account non-existence: {}",
         unknown.raw
     );
     let bad_ref = c.call_tool("mail_get_message", json!({"message_ref":"!!not-a-ref!!"}));

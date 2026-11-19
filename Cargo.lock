@@ -2089,6 +2089,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "markup5ever_rcdom"
+version = "0.40.1+unofficial"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "64206f12eb431c03d9b6f293846f8b0517578905b6c0cac266aa52f09c11ad7c"
+dependencies = [
+ "html5ever",
+ "markup5ever",
+ "tendril",
+ "xml5ever",
+]
+
+[[package]]
 name = "matchers"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2320,13 +2332,17 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
+ "async-imap",
  "clap",
  "openmail-core",
  "openmail-imap",
  "openmail-mcp",
  "openmail-security",
+ "rcgen",
  "secrecy",
+ "serde_json",
  "tokio",
+ "tokio-rustls",
  "tracing",
  "tracing-subscriber",
 ]
@@ -2351,7 +2367,9 @@ dependencies = [
  "async-imap",
  "base64 0.22.1",
  "futures",
+ "html5ever",
  "mail-parser",
+ "markup5ever_rcdom",
  "openmail-core",
  "rcgen",
  "rustls-native-certs",
@@ -2362,6 +2380,8 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tracing",
+ "unicode-general-category",
+ "unicode-normalization",
  "webpki-roots",
 ]
 
@@ -2370,6 +2390,7 @@ name = "openmail-mcp"
 version = "0.1.0"
 dependencies = [
  "openmail-core",
+ "openmail-security",
  "rmcp",
  "schemars",
  "serde",
@@ -2435,6 +2456,7 @@ dependencies = [
  "getrandom 0.4.3",
  "keyring",
  "openmail-core",
+ "openmail-smtp",
  "rusqlite",
  "secrecy",
  "sha2 0.10.9",
@@ -3641,6 +3663,7 @@ dependencies = [
  "parking_lot",
  "phf_shared 0.14.0",
  "precomputed-hash",
+ "serde",
 ]
 
 [[package]]
@@ -4558,6 +4581,16 @@ dependencies = [
  "rusticata-macros",
  "thiserror 2.0.21",
  "time",
+]
+
+[[package]]
+name = "xml5ever"
+version = "0.40.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "73290529dc9bc6c6155bf77fdd70ce0061f98ad387586aa3104cddab29206961"
+dependencies = [
+ "log",
+ "markup5ever",
 ]
 
 [[package]]
