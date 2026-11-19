@@ -1,4 +1,20 @@
 # Example only: fake host and account, no real secrets.
-# See docs/ for the full schema; `openmail-mcp init` generates a real starter.
-[[accounts]]
-id = "example"
+# `openmail-mcp init` generates a real starter. The password is read from the container
+# environment (variable below, supplied via .env); it is never written into this file.
+version = 1
+
+[[account]]
+id = "personal"
+display_name = "Personal"
+email = "me@example.com"
+auth = "password"
+read_only = true
+
+[account.imap]
+host = "imap.example.com"
+port = 993
+tls = "implicit"
+
+[account.credential]
+kind = "env"
+var = "OPENMAIL_PERSONAL_PASSWORD"

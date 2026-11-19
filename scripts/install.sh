@@ -64,16 +64,27 @@ base_url() {
 main() {
   local target asset url install_dir
   target="$(detect_target)"
-  asset="${BIN_NAME}-${target}.tar.gz"
   url="$(base_url)"
   install_dir="${OPENMAIL_INSTALL_DIR:-$HOME/.local/bin}"
 
   tmp="$(mktemp -d)"
   trap '[[ -z "$tmp" ]] || rm -rf -- "$tmp"' EXIT
 
+  curl --proto '=https,file' --tlsv1.2 -fsSL -o "$tmp/$SUMS_NAME" "$url/$SUMS_NAME" || die "download failed: $url/$SUMS_NAME"
+
+  # release.yml names archives openmail-mcp-<tag>-<target>.tar.gz; "latest" gives no tag to build
+  # that name from, so resolve it from the checksum list (plain <bin>-<target> also accepted).
+  asset="$(awk -v bin="$BIN_NAME" -v tgt="$target" '
+    BEGIN { suf = "-" tgt ".tar.gz" }
+    { n=$2; sub(/^\*/, "", n) }
+    n == bin "-" tgt ".tar.gz" { print n; exit }
+    index(n, bin "-") == 1 && substr(n, length(n) - length(suf) + 1) == suf { print n }' \
+    "$tmp/$SUMS_NAME" | sort -V | tail -n1)"
+  [[ -n "$asset" ]] || die "no ${BIN_NAME} archive for ${target} listed in $SUMS_NAME"
+  [[ "$asset" =~ ^[A-Za-z0-9._-]+$ ]] || die "refusing unsafe asset name in $SUMS_NAME: $asset"
+
   echo "Downloading ${asset} from ${url}"
   curl --proto '=https,file' --tlsv1.2 -fsSL -o "$tmp/$asset" "$url/$asset" || die "download failed: $url/$asset"
-  curl --proto '=https,file' --tlsv1.2 -fsSL -o "$tmp/$SUMS_NAME" "$url/$SUMS_NAME" || die "download failed: $url/$SUMS_NAME"
 
   # Verify BEFORE extracting anything.
   local expected actual
