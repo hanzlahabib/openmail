@@ -54,9 +54,16 @@ fn main() -> ExitCode {
 
 /// Logs go to stderr only: stdout is the MCP JSON-RPC channel in stdio mode.
 fn init_tracing(filter: &str) {
-    let filter = EnvFilter::try_new(filter).unwrap_or_else(|_| EnvFilter::new("warn"));
+    let mut env_filter = EnvFilter::try_new(filter).unwrap_or_else(|_| EnvFilter::new("warn"));
+    // rmcp logs whole tool results (mail bodies) at debug, so a blanket `--log debug` would copy
+    // mailbox content into stderr. Cap it unless the user asks for rmcp explicitly.
+    if !filter.contains("rmcp")
+        && let Ok(cap) = "rmcp=info".parse()
+    {
+        env_filter = env_filter.add_directive(cap);
+    }
     tracing_subscriber::fmt()
-        .with_env_filter(filter)
+        .with_env_filter(env_filter)
         .with_writer(std::io::stderr)
         .init();
 }
