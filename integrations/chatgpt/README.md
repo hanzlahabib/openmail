@@ -10,15 +10,18 @@ and ChatGPT-native scheduling is not relied on (see [Briefs](#briefs-and-schedul
 
 ## Example deployment
 
+Every host-specific value comes from environment variables (`OPENMAIL_HTTP_PUBLIC_URL` on the server; this guide writes it as
+`$OPENMAIL_PUBLIC_URL`). Nothing about a particular host is stored in this repository.
+
 A typical setup (details in `docs/deployment/REMOTE.md`): an unprivileged `openmail` system user, a hardened systemd
 unit, in-process TLS on `127.0.0.1:8765`, and a reverse proxy with a Let's Encrypt certificate publishing
-`https://mail-mcp.example.com/mcp`. Check from outside: valid TLS, `/healthz` 200, `/mcp` 401 without a token.
+`$OPENMAIL_PUBLIC_URL/mcp`. Check from outside: valid TLS, `/healthz` 200, `/mcp` 401 without a token.
 Keep the connected mailbox read-only, and prefer a dedicated mailbox over your main one.
 
 **ChatGPT needs OAuth, and OpenMail now ships its own authorization server** (free, self-hosted, no third-party IdP):
 see "Built-in OAuth authorization server" in `docs/deployment/REMOTE.md`. Enable it by replacing the token file with
 `OPENMAIL_OAUTH_OWNER_PASSWORD_HASH_FILE` in `/etc/openmail/env` and restarting the service. Then add
-`https://mail-mcp.example.com/mcp` as a custom MCP server in ChatGPT (developer mode), choose OAuth with dynamic client
+`$OPENMAIL_PUBLIC_URL/mcp` as a custom MCP server in ChatGPT (developer mode), choose OAuth with dynamic client
 registration, approve on the OpenMail consent page with the owner password, and run [TEST_CHECKLIST.md](TEST_CHECKLIST.md).
 The flow is verified end to end against a real HTTPS listener in the test suite; it has **not** been tried with a live ChatGPT account.
 
@@ -44,9 +47,9 @@ The flow is verified end to end against a real HTTPS listener in the test suite;
 2. **Public HTTPS + JWT mode** (not the token file; ChatGPT cannot send it):
    ```bash
    OPENMAIL_HTTP_TLS_CERT=... OPENMAIL_HTTP_TLS_KEY=... \
-   OPENMAIL_HTTP_PUBLIC_URL=https://mail-mcp.example.com \
+   OPENMAIL_HTTP_PUBLIC_URL=$OPENMAIL_PUBLIC_URL \
    OPENMAIL_HTTP_JWT_ISSUER=https://idp.example.com/ \
-   OPENMAIL_HTTP_JWT_AUDIENCE=https://mail-mcp.example.com/mcp \
+   OPENMAIL_HTTP_JWT_AUDIENCE=$OPENMAIL_PUBLIC_URL/mcp \
    OPENMAIL_HTTP_JWT_JWKS_URL=https://idp.example.com/.well-known/jwks.json \
    OPENMAIL_HTTP_JWT_SCOPE_ACCOUNTS='mail:read=work' \
    openmail-mcp serve --transport http --bind 127.0.0.1:8765 --config ~/.config/openmail-mcp/config.toml
