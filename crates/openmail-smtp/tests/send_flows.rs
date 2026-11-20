@@ -291,7 +291,7 @@ async fn timeout_after_data_is_uncertain_and_never_resent_even_after_restart() {
     script.after_data = AfterData::Hang;
     let srv = start(script).await;
     let (_d, path) = db();
-    let acct = account(srv.port, "implicit", 1);
+    let acct = account(srv.port, "implicit", 5);
     {
         let c = client(&path, &srv, "s3cret");
         let err = send(&c, &acct, request("k-hang")).await.unwrap_err();
