@@ -56,3 +56,15 @@ pub struct PrepareReplyOut {
     pub to: Vec<UntrustedText>,
     pub subject: UntrustedText,
 }
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct BulkMarkOut {
+    /// True when nothing was changed because `dry_run` was set.
+    pub dry_run: bool,
+    /// Unread messages that matched (or refs supplied).
+    pub matched: usize,
+    pub marked_read: usize,
+    pub failed: usize,
+    /// True when more than 500 matched: call again to continue (marked mail no longer matches).
+    pub truncated: bool,
+}

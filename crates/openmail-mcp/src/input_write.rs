@@ -179,3 +179,40 @@ pub fn addresses(list: Option<Vec<AddressInput>>) -> Result<Vec<Address>, ToolEr
         .map(AddressInput::into_address)
         .collect()
 }
+
+/// Hard cap per call: one call is one tool result and one request timeout window.
+pub const MAX_BULK_MARK: usize = 500;
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BulkMarkReadInput {
+    /// Account id as returned by mail_list_accounts.
+    #[schemars(length(min = 1, max = 64))]
+    pub account: String,
+    /// Folder to mark in; default INBOX.
+    #[schemars(length(min = 1, max = 512))]
+    pub folder: Option<String>,
+    /// Explicit message_refs (at most 500). When given, no filters may be used.
+    #[schemars(length(max = 500))]
+    pub message_refs: Option<Vec<String>>,
+    /// Only unread mail from senders containing this text.
+    #[schemars(length(min = 1, max = 512))]
+    pub from: Option<String>,
+    /// Only mail whose recipient contains this text (useful for a catch-all/forwarded mailbox).
+    #[schemars(length(min = 1, max = 512))]
+    pub to: Option<String>,
+    /// Only mail whose subject contains this text.
+    #[schemars(length(min = 1, max = 512))]
+    pub subject: Option<String>,
+    /// Received on/after this RFC 3339 timestamp or YYYY-MM-DD date.
+    #[schemars(length(min = 1, max = 64))]
+    pub since: Option<String>,
+    /// Received before this RFC 3339 timestamp or YYYY-MM-DD date.
+    #[schemars(length(min = 1, max = 64))]
+    pub before: Option<String>,
+    /// Required with filters: confirms you mean every matching unread message in the folder
+    /// (up to 500). Not needed with message_refs.
+    pub all_matching: Option<bool>,
+    /// Count what would be marked without changing anything.
+    pub dry_run: Option<bool>,
+}

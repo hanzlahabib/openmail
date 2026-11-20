@@ -11,8 +11,8 @@ use rmcp::{RoleServer, tool, tool_router};
 use crate::backend::FullBackend;
 use crate::error::ToolError;
 use crate::input::MessageRefInput;
-use crate::input_write::{FlagInput, MoveInput};
-use crate::output_write::{MovedOut, OkOut};
+use crate::input_write::{BulkMarkReadInput, FlagInput, MAX_BULK_MARK, MoveInput};
+use crate::output_write::{BulkMarkOut, MovedOut, OkOut};
 use crate::server::{OpenMailServer, parse_ref};
 
 /// RFC 6154 role name the backend reports for the archive folder.
@@ -37,6 +37,50 @@ impl<B: FullBackend> OpenMailServer<B> {
         Parameters(input): Parameters<MessageRefInput>,
     ) -> Result<Json<OkOut>, ToolError> {
         self.set_seen(&ctx, &input.message_ref, true).await
+    }
+
+    #[tool(
+        name = "mail_mark_read_bulk",
+        description = "Mark many messages as read at once: either explicit message_refs (max 500), or every UNREAD message \
+                       in a folder matching filters (from, to, subject, since, before) with all_matching=true, up to 500 per \
+                       call (call again for more). Use dry_run=true to count first. Reversible one message at a time with \
+                       mail_mark_unread; nothing is deleted or moved. Requires organize permission on the account.",
+        annotations(
+            title = "Mark many read",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = true
+        )
+    )]
+    async fn mail_mark_read_bulk(
+        &self,
+        ctx: RequestContext<RoleServer>,
+        Parameters(input): Parameters<BulkMarkReadInput>,
+    ) -> Result<Json<BulkMarkOut>, ToolError> {
+        let p = self.principal(&ctx)?;
+        let (id, cfg) = self.authorized_raw(&p, &input.account, Action::Organize)?;
+        let dry_run = input.dry_run.unwrap_or(false);
+        let refs = self.bulk_targets(cfg, &id, &input).await?;
+        let truncated = refs.len() > MAX_BULK_MARK;
+        let refs: Vec<MessageRef> = refs.into_iter().take(MAX_BULK_MARK).collect();
+        let matched = refs.len();
+        let (mut marked, mut failed) = (0usize, 0usize);
+        if !dry_run {
+            for r in &refs {
+                match self.run(cfg, self.backend.set_seen(r, true)).await {
+                    Ok(()) => marked += 1,
+                    Err(_) => failed += 1,
+                }
+            }
+        }
+        Ok(Json(BulkMarkOut {
+            dry_run,
+            matched,
+            marked_read: marked,
+            failed,
+            truncated,
+        }))
     }
 
     #[tool(
@@ -134,6 +178,82 @@ impl<B: FullBackend> OpenMailServer<B> {
 }
 
 impl<B: FullBackend> OpenMailServer<B> {
+    /// The messages a bulk call applies to. Explicit refs must belong to this account (a ref for
+    /// another account is refused, not skipped); filters search UNREAD mail only and need the
+    /// explicit `all_matching` confirmation, so a vague request cannot touch a whole mailbox.
+    async fn bulk_targets(
+        &self,
+        cfg: &AccountConfig,
+        id: &AccountId,
+        input: &BulkMarkReadInput,
+    ) -> Result<Vec<MessageRef>, ToolError> {
+        let has_filter = [
+            &input.from,
+            &input.to,
+            &input.subject,
+            &input.since,
+            &input.before,
+        ]
+        .iter()
+        .any(|f| f.is_some());
+        if let Some(raw) = &input.message_refs {
+            if has_filter || input.folder.is_some() {
+                return Err(ToolError::invalid(
+                    "message_refs cannot be combined with a folder or filters",
+                ));
+            }
+            let mut out = Vec::with_capacity(raw.len());
+            for r in raw {
+                let r = parse_ref(r)?;
+                if &r.account != id {
+                    return Err(ToolError::invalid(
+                        "every message_ref must belong to `account`",
+                    ));
+                }
+                out.push(r);
+            }
+            return Ok(out);
+        }
+        if !has_filter {
+            return Err(ToolError::invalid(
+                "give message_refs, or at least one filter (from, to, subject, since, before)",
+            ));
+        }
+        if input.all_matching != Some(true) && input.dry_run != Some(true) {
+            return Err(ToolError::invalid(
+                "set all_matching=true to mark every matching unread message, or dry_run=true to count first",
+            ));
+        }
+        let q = crate::search::build_query(crate::input::SearchInput {
+            account: input.account.clone(),
+            folder: Some(input.folder.clone().unwrap_or_else(|| "INBOX".to_owned())),
+            from: input.from.clone(),
+            to: input.to.clone(),
+            subject: input.subject.clone(),
+            text: None,
+            since: input.since.clone(),
+            before: input.before.clone(),
+            unread: Some(true),
+            flagged: None,
+            has_attachment: None,
+            cursor: None,
+            limit: None,
+        })?;
+        let mut refs = Vec::new();
+        let mut cursor = None;
+        // One more than the cap so `truncated` is exact without fetching everything.
+        while refs.len() <= MAX_BULK_MARK {
+            let page = self.page(cursor.take(), None)?;
+            let res = self.run(cfg, self.backend.search(id, &q, page)).await?;
+            refs.extend(res.items.into_iter().map(|m| m.reference));
+            match res.next_cursor {
+                Some(c) => cursor = Some(c),
+                None => break,
+            }
+        }
+        Ok(refs)
+    }
+
     async fn set_seen(
         &self,
         ctx: &RequestContext<RoleServer>,
