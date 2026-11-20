@@ -160,7 +160,8 @@ async fn timeout_after_data_moves_smtp_uncertain() {
     let dir = tempfile::tempdir().unwrap();
     let m = Arc::new(Metrics::new());
     let c = client(&dir.path().join("o.sqlite"), &srv, "s3cret", &m);
-    let acct = account(srv.port, "implicit", 1);
+    // 1 s was too tight for the TLS handshake on slow Windows runners, which then timed out BEFORE data.
+    let acct = account(srv.port, "implicit", 5);
     let r = request("k-hang");
     let err = c
         .send(&acct, r.clone(), proof_for(&acct, &r))
