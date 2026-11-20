@@ -216,3 +216,18 @@ pub struct BulkMarkReadInput {
     /// Count what would be marked without changing anything.
     pub dry_run: Option<bool>,
 }
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MarkAllReadInput {
+    /// Account id as returned by mail_list_accounts.
+    #[schemars(length(min = 1, max = 64))]
+    pub account: String,
+    /// Folder to clear; default INBOX.
+    #[schemars(length(min = 1, max = 512))]
+    pub folder: Option<String>,
+    /// Must be true: confirms you mean every unread message in the folder (500 per call).
+    pub confirm: Option<bool>,
+    /// Count only; change nothing.
+    pub dry_run: Option<bool>,
+}

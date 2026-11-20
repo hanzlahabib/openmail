@@ -58,7 +58,7 @@ fn first_ref(page: &Value) -> String {
         .to_owned()
 }
 
-const TOOLS: [&str; 28] = [
+const TOOLS: [&str; 29] = [
     "brief_generate",
     "brief_get_followups",
     "brief_get_latest",
@@ -78,6 +78,7 @@ const TOOLS: [&str; 28] = [
     "mail_list_attachments",
     "mail_list_folders",
     "mail_list_messages",
+    "mail_mark_all_read",
     "mail_mark_read",
     "mail_mark_read_bulk",
     "mail_mark_unread",
@@ -90,13 +91,14 @@ const TOOLS: [&str; 28] = [
 ];
 
 /// Tools that need mailbox write permissions.
-const WRITE_TOOLS: [&str; 12] = [
+const WRITE_TOOLS: [&str; 13] = [
     "mail_archive_message",
     "mail_create_draft",
     "mail_delete_draft",
     "mail_flag_message",
     "mail_forward_approved",
     "mail_mark_read",
+    "mail_mark_all_read",
     "mail_mark_read_bulk",
     "mail_mark_unread",
     "mail_move_message",

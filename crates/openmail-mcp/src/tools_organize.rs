@@ -11,7 +11,9 @@ use rmcp::{RoleServer, tool, tool_router};
 use crate::backend::FullBackend;
 use crate::error::ToolError;
 use crate::input::MessageRefInput;
-use crate::input_write::{BulkMarkReadInput, FlagInput, MAX_BULK_MARK, MoveInput};
+use crate::input_write::{
+    BulkMarkReadInput, FlagInput, MAX_BULK_MARK, MarkAllReadInput, MoveInput,
+};
 use crate::output_write::{BulkMarkOut, MovedOut, OkOut};
 use crate::server::{OpenMailServer, parse_ref};
 
@@ -62,6 +64,70 @@ impl<B: FullBackend> OpenMailServer<B> {
         let (id, cfg) = self.authorized_raw(&p, &input.account, Action::Organize)?;
         let dry_run = input.dry_run.unwrap_or(false);
         let refs = self.bulk_targets(cfg, &id, &input).await?;
+        let truncated = refs.len() > MAX_BULK_MARK;
+        let refs: Vec<MessageRef> = refs.into_iter().take(MAX_BULK_MARK).collect();
+        let matched = refs.len();
+        let (mut marked, mut failed) = (0usize, 0usize);
+        if !dry_run {
+            for r in &refs {
+                match self.run(cfg, self.backend.set_seen(r, true)).await {
+                    Ok(()) => marked += 1,
+                    Err(_) => failed += 1,
+                }
+            }
+        }
+        Ok(Json(BulkMarkOut {
+            dry_run,
+            matched,
+            marked_read: marked,
+            failed,
+            truncated,
+        }))
+    }
+
+    #[tool(
+        name = "mail_mark_all_read",
+        description = "Mark EVERY unread message in one folder of one account as read, 500 per call (the result says \
+                       truncated=true while more remain: call again). Needs confirm=true; dry_run=true counts first. \
+                       Nothing is deleted or moved. Use mail_mark_read_bulk to limit by sender/subject/date. \
+                       Requires organize permission on the account.",
+        annotations(
+            title = "Mark all read",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = true
+        )
+    )]
+    async fn mail_mark_all_read(
+        &self,
+        ctx: RequestContext<RoleServer>,
+        Parameters(input): Parameters<MarkAllReadInput>,
+    ) -> Result<Json<BulkMarkOut>, ToolError> {
+        let p = self.principal(&ctx)?;
+        let (id, cfg) = self.authorized_raw(&p, &input.account, Action::Organize)?;
+        let dry_run = input.dry_run.unwrap_or(false);
+        if !dry_run && input.confirm != Some(true) {
+            return Err(ToolError::invalid(
+                "set confirm=true to mark every unread message in the folder, or dry_run=true to count first",
+            ));
+        }
+        let q = crate::search::build_query(crate::input::SearchInput {
+            account: input.account.clone(),
+            folder: Some(input.folder.clone().unwrap_or_else(|| "INBOX".to_owned())),
+            from: None,
+            to: None,
+            subject: None,
+            text: None,
+            since: None,
+            before: None,
+            unread: Some(true),
+            flagged: None,
+            has_attachment: None,
+            cursor: None,
+            limit: None,
+        })?;
+        let refs = self.search_refs(cfg, &id, &q).await?;
         let truncated = refs.len() > MAX_BULK_MARK;
         let refs: Vec<MessageRef> = refs.into_iter().take(MAX_BULK_MARK).collect();
         let matched = refs.len();
@@ -239,12 +305,22 @@ impl<B: FullBackend> OpenMailServer<B> {
             cursor: None,
             limit: None,
         })?;
+        self.search_refs(cfg, id, &q).await
+    }
+
+    /// Unread-search results, one past the bulk cap so `truncated` is exact.
+    async fn search_refs(
+        &self,
+        cfg: &AccountConfig,
+        id: &AccountId,
+        q: &openmail_core::model::SearchQuery,
+    ) -> Result<Vec<MessageRef>, ToolError> {
         let mut refs = Vec::new();
         let mut cursor = None;
         // One more than the cap so `truncated` is exact without fetching everything.
         while refs.len() <= MAX_BULK_MARK {
             let page = self.page(cursor.take(), None)?;
-            let res = self.run(cfg, self.backend.search(id, &q, page)).await?;
+            let res = self.run(cfg, self.backend.search(id, q, page)).await?;
             refs.extend(res.items.into_iter().map(|m| m.reference));
             match res.next_cursor {
                 Some(c) => cursor = Some(c),
