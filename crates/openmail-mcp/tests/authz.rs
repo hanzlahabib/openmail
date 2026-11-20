@@ -82,6 +82,7 @@ fn args_for(tool: &str, account: &str) -> Value {
         "mail_mark_read" | "mail_mark_unread" | "mail_archive_message" | "mail_delete_draft" => {
             json!({ "message_ref": r })
         }
+        "mail_mark_read_bulk" => json!({ "account": account, "message_refs": [r] }),
         "mail_flag_message" => json!({ "message_ref": r, "flagged": true }),
         "mail_move_message" => json!({ "message_ref": r, "dest_folder": "Archive" }),
         "mail_create_draft" => json!({
