@@ -1,4 +1,4 @@
-# Release readiness (2026-11-20): v0.1.0 PRE-RELEASE, not a stable release
+# Release readiness (2026-11-20, updated): v0.1.0 PRE-RELEASE, not a stable release
 
 Branch `integration`. Evidence = commands actually run (see `docs/TEST_REPORT.md`, `docs/SECURITY_REVIEW.md`).
 
@@ -12,6 +12,9 @@ Branch `integration`. Evidence = commands actually run (see `docs/TEST_REPORT.md
 | 6 Distribution | **Not passed** | CI/release/Docker/installers written but never run on GitHub; Docker image and installers not verified end to end here; license audit generated, not independently verified |
 | 7 Briefing | **Passed (local)** | engine, MCP tools, CLI, opt-in scheduler with SQLite lease (two-process test), owner-only digest, AI boundary; 3-account GreenMail run incl. one unreachable account |
 | 8 ChatGPT | **Not passed** | docs and local verification record only; not tested against a live ChatGPT account |
+
+## Added since the first draft
+Built-in single-owner OAuth 2.1 authorization server (PKCE, dynamic client registration, owner-chosen permissions), account registry (`accounts add|remove`, `accounts.d/`, secret files) with classified connection diagnostics, bulk mark-as-read tools, sending wired into `serve` with an owner-chosen approval mode (owner_only / rules / delegated, daily caps), compose-and-send with an explicit `user_confirmed` gate. All have automated tests; an adversarial review of these surfaces is in progress and its findings are tracked in `docs/SECURITY_REVIEW.md`.
 
 ## Known issues
 - `openmail-imap` `connection_limits_are_enforced` counts live proxy sockets and failed once under heavy parallel load (peak 5 vs cap 4), passing 3/3 in isolation: treat as a flaky test until the socket-accounting race is understood.
