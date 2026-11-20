@@ -108,12 +108,18 @@ fn render_address(a: &Address) -> String {
 impl<B: FullBackend> OpenMailServer<B> {
     #[tool(
         name = "mail_send_approved",
-        description = "Send a saved draft. Requires an approval_id that the account OWNER granted out of band for \
-                       exactly this draft; you cannot create one. Without a valid id nothing is sent and the \
-                       error carries a request_id the owner can approve. Each approval works once. Requires \
-                       read and send permission.",
+        description = "Send an email from one of your accounts. Two modes: (1) message_ref of a saved draft; or \
+                       (2) compose and send: account, to (and optional cc), subject and text/html. Sending \
+                       needs explicit consent: in mode 2 show the user the recipients, subject and body, and \
+                       only after they say yes call again with user_confirmed=true (a first call without it \
+                       sends nothing and returns a preview). On top of that the server owner's approval policy \
+                       applies: with owner approval an approval_id granted out of band is required (without a \
+                       valid id nothing is sent and the error carries a request_id the owner can approve; each \
+                       approval works once); under standing rules or delegated mode the server may approve \
+                       within its limits (daily cap per account). You can never create an approval yourself. \
+                       Requires send permission on the account.",
         annotations(
-            title = "Send approved draft",
+            title = "Send email (with approval)",
             read_only_hint = false,
             destructive_hint = true,
             idempotent_hint = false,
@@ -126,28 +132,22 @@ impl<B: FullBackend> OpenMailServer<B> {
         Parameters(input): Parameters<SendApprovedInput>,
     ) -> Result<Json<SendOut>, ToolError> {
         let p = self.principal(&ctx)?;
-        let r = parse_ref(&input.message_ref)?;
-        let cfg = self.authorized_all(&p, &r.account, &[Action::Read, Action::Send])?;
-        self.ready_to_send(cfg)?;
-        self.ensure_in_drafts(cfg, &r).await?;
-        let msg = self.load_source(cfg, &r).await?;
-        let attachments = self.collect_attachments(cfg, &r, &msg.attachments).await?;
-        let request = SendRequest {
-            idempotency_key: String::new(),
-            from: own_address(cfg),
-            to: msg.summary.to.clone(),
-            cc: msg.cc.clone(),
-            // The Message contract carries no Bcc, so a draft's Bcc is not sent (documented gap).
-            bcc: Vec::new(),
-            subject: single_line(&msg.summary.subject.0),
-            text: msg.body.text.map(|t| t.0),
-            html: msg.body.html_sanitized.map(|h| h.0),
-            attachments,
-            in_reply_to: msg.in_reply_to,
-            references: msg.references,
-        };
-        self.deliver(&p, cfg, &r, request, input.approval_id.as_deref())
-            .await
+        let compose = input.account.is_some()
+            || input.to.is_some()
+            || input.cc.is_some()
+            || input.subject.is_some()
+            || input.text.is_some()
+            || input.html.is_some();
+        match (&input.message_ref, compose) {
+            (Some(_), true) => Err(ToolError::invalid(
+                "use either message_ref (send a draft) or account/to/subject/body (compose), not both",
+            )),
+            (None, false) => Err(ToolError::invalid(
+                "give message_ref of a draft, or account, to, subject and a body",
+            )),
+            (Some(raw), false) => self.send_draft(&p, raw, input.approval_id.as_deref()).await,
+            (None, true) => self.send_composed(&p, input).await,
+        }
     }
 
     #[tool(
@@ -243,6 +243,111 @@ fn forward_text(note: &str, m: &Message) -> String {
 }
 
 impl<B: FullBackend> OpenMailServer<B> {
+    /// Mode 1: send a draft the account already holds.
+    async fn send_draft(
+        &self,
+        p: &Principal,
+        raw_ref: &str,
+        approval: Option<&str>,
+    ) -> Result<Json<SendOut>, ToolError> {
+        let r = parse_ref(raw_ref)?;
+        let cfg = self.authorized_all(p, &r.account, &[Action::Read, Action::Send])?;
+        self.ready_to_send(cfg)?;
+        self.ensure_in_drafts(cfg, &r).await?;
+        let msg = self.load_source(cfg, &r).await?;
+        let attachments = self.collect_attachments(cfg, &r, &msg.attachments).await?;
+        let request = SendRequest {
+            idempotency_key: String::new(),
+            from: own_address(cfg),
+            to: msg.summary.to.clone(),
+            cc: msg.cc.clone(),
+            // The Message contract carries no Bcc, so a draft's Bcc is not sent (documented gap).
+            bcc: Vec::new(),
+            subject: single_line(&msg.summary.subject.0),
+            text: msg.body.text.map(|t| t.0),
+            html: msg.body.html_sanitized.map(|h| h.0),
+            attachments,
+            in_reply_to: msg.in_reply_to,
+            references: msg.references,
+        };
+        self.deliver(p, cfg, &r, request, approval).await
+    }
+
+    /// Mode 2: compose in one call. The model's own wording is what gets sent, so the human must
+    /// have seen it: without `user_confirmed=true` this returns a preview and sends nothing.
+    async fn send_composed(
+        &self,
+        p: &Principal,
+        input: SendApprovedInput,
+    ) -> Result<Json<SendOut>, ToolError> {
+        let raw_account = input
+            .account
+            .as_deref()
+            .ok_or_else(|| ToolError::invalid("account is required to compose a message"))?;
+        let (id, cfg) = self.authorized_raw(p, raw_account, Action::Send)?;
+        self.ready_to_send(cfg)?;
+        let to = addresses(input.to)?;
+        let cc = addresses(input.cc)?;
+        if to.is_empty() || to.len() + cc.len() > MAX_RECIPIENTS {
+            return Err(ToolError::invalid("1 to 100 recipients are required"));
+        }
+        let subject = single_line(
+            input
+                .subject
+                .as_deref()
+                .ok_or_else(|| ToolError::invalid("subject is required"))?,
+        );
+        if subject.is_empty() || subject.chars().count() > MAX_SUBJECT_CHARS {
+            return Err(ToolError::invalid("subject must be 1 to 998 characters"));
+        }
+        if input.text.is_none() && input.html.is_none() {
+            return Err(ToolError::invalid("a text or html body is required"));
+        }
+        let body_len =
+            input.text.as_deref().map_or(0, str::len) + input.html.as_deref().map_or(0, str::len);
+        if body_len > MAX_DRAFT_BODY_BYTES {
+            return Err(ToolError::invalid("the body is too large"));
+        }
+        if input.user_confirmed != Some(true) {
+            let preview = serde_json::json!({
+                "account": id.as_str(),
+                "from": cfg.email,
+                "to": to.iter().map(render_address).collect::<Vec<_>>(),
+                "cc": cc.iter().map(render_address).collect::<Vec<_>>(),
+                "subject": subject,
+                "body_chars": input.text.as_deref().or(input.html.as_deref()).map_or(0, |b| b.chars().count()),
+            });
+            return Err(ToolError::new(
+                ErrorCode::SendNotApproved,
+                "nothing was sent: show the user the recipients, subject and body, and call again with user_confirmed=true only after they explicitly agree",
+            )
+            .with_detail("needs_user_confirmation", true)
+            .with_detail("preview", preview));
+        }
+        let request = SendRequest {
+            idempotency_key: String::new(),
+            from: own_address(cfg),
+            to,
+            cc,
+            bcc: Vec::new(),
+            subject,
+            text: input.text,
+            html: input.html,
+            attachments: Vec::new(),
+            in_reply_to: None,
+            references: Vec::new(),
+        };
+        // No source message: the idempotency key then covers account + exact content only.
+        let source = MessageRef {
+            account: id,
+            folder: "-".to_owned(),
+            uid_validity: 0,
+            uid: 0,
+        };
+        self.deliver(p, cfg, &source, request, input.approval_id.as_deref())
+            .await
+    }
+
     /// Fail before touching the backend when this deployment cannot send at all.
     fn ready_to_send(&self, cfg: &AccountConfig) -> Result<(), ToolError> {
         if self.outgoing.is_none() {
