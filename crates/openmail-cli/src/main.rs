@@ -6,6 +6,7 @@ mod cli;
 mod doctor;
 mod init;
 mod oauth_cmd;
+mod send_wiring;
 mod serve;
 
 use std::process::ExitCode;

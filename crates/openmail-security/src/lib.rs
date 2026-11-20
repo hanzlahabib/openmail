@@ -10,6 +10,7 @@ pub mod pending;
 pub mod ratelimit;
 pub mod redact;
 pub mod secret;
+pub mod send_policy;
 
 pub use approval::{
     ApprovalGrantor, ApprovalId, ApprovalIssuer, ApprovalVerifier, GrantDecision, SendIntent,
@@ -25,3 +26,4 @@ pub use pending::{
 pub use ratelimit::{RateLimitConfig, RateLimiter};
 pub use redact::Redacted;
 pub use secret::EnvKeyringSecretSource;
+pub use send_policy::{ApprovalMode, PolicyConsumer, SendPolicyStore};

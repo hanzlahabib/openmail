@@ -283,6 +283,7 @@ impl ServeBackend for LiveBackend {
             .with_observer(Observer::recording(Arc::clone(&metrics)));
         runtime.block_on(async {
             let (server, scheduler) = brief_cmd::attach(server, config, &self.briefs)?;
+            let server = crate::send_wiring::attach(server, config, &self.briefs)?;
             // stdout is the JSON-RPC channel; the library never prints to it.
             let served = serve_stdio(server).await.context("serving MCP over stdio");
             if let Some(task) = scheduler {
@@ -569,6 +570,7 @@ async fn serve_https(
     )
     .with_observer(Observer::recording(Arc::clone(&metrics)));
     let (server, scheduler) = brief_cmd::attach(server, config, briefs)?;
+    let server = crate::send_wiring::attach(server, config, briefs)?;
     let mcp_config = StreamableHttpServerConfig::default().with_allowed_hosts(allowed_hosts(
         bind,
         &base,

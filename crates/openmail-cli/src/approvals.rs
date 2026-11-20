@@ -46,10 +46,119 @@ pub enum ApprovalsAction {
         /// Request id from `approvals list`.
         id: String,
     },
+    /// Standing "allow always" rules (used when the server runs with
+    /// OPENMAIL_SEND_APPROVAL=rules). Only you, on the server, can create them.
+    Rules {
+        #[command(subcommand)]
+        action: RulesAction,
+    },
+    /// Show how sends are approved on this server (set by OPENMAIL_SEND_APPROVAL).
+    Mode,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum RulesAction {
+    /// Allow an account to send to one address or one domain without asking each time.
+    Add {
+        /// Account id.
+        #[arg(long)]
+        account: String,
+        /// Recipient: `person@example.com` or `@example.com` (never "everyone").
+        #[arg(long)]
+        to: String,
+        /// Most sends per day under this rule.
+        #[arg(long, default_value_t = 20)]
+        per_day: u32,
+        /// Days until the rule expires (max 90).
+        #[arg(long, default_value_t = 30)]
+        days: u32,
+        #[arg(long, default_value = "")]
+        note: String,
+    },
+    /// List live rules.
+    List,
+    /// Revoke a rule by id.
+    Revoke { id: i64 },
+}
+
+fn rules(db: &Path, action: RulesAction) -> Result<()> {
+    use openmail_core::ids::AccountId;
+    use openmail_security::SendPolicyStore;
+    ensure_private_dir(db)?;
+    let store =
+        SendPolicyStore::open(&db.with_file_name("send-policy.db")).map_err(|e| anyhow!("{e}"))?;
+    let now = SystemClock::new().unix_secs();
+    let mut out = std::io::stdout().lock();
+    match action {
+        RulesAction::Add {
+            account,
+            to,
+            per_day,
+            days,
+            note,
+        } => {
+            let id = store
+                .add_rule(
+                    &AccountId::new(account).map_err(|e| anyhow!("{e}"))?,
+                    &to,
+                    per_day,
+                    days,
+                    &note,
+                    now,
+                )
+                .map_err(|e| anyhow!("{e}"))?;
+            writeln!(
+                out,
+                "Rule {id} added: up to {per_day}/day to {to} for {days} days. Active only when OPENMAIL_SEND_APPROVAL=rules."
+            )?;
+        }
+        RulesAction::List => {
+            let rules = store.list(now).map_err(|e| anyhow!("{e}"))?;
+            if rules.is_empty() {
+                writeln!(out, "No live rules.")?;
+            }
+            for r in rules {
+                writeln!(
+                    out,
+                    "{}  {}  to {}  {}/day  expires in {}  {}",
+                    r.id,
+                    r.account,
+                    r.pattern,
+                    r.max_per_day,
+                    minutes(r.expires_at.saturating_sub(now)),
+                    r.note
+                )?;
+            }
+        }
+        RulesAction::Revoke { id } => {
+            if store.revoke(id).map_err(|e| anyhow!("{e}"))? {
+                writeln!(out, "Rule {id} revoked.")?;
+            } else {
+                bail!("no live rule {id}");
+            }
+        }
+    }
+    Ok(())
 }
 
 pub fn run(args: ApprovalsArgs) -> Result<()> {
     let db = db_path(args.state_dir.as_deref(), &StateEnv::from_process());
+    match args.action {
+        ApprovalsAction::Rules { action } => return rules(&db, action),
+        ApprovalsAction::Mode => {
+            let mode = openmail_security::ApprovalMode::parse(
+                &std::env::var("OPENMAIL_SEND_APPROVAL").unwrap_or_default(),
+            )
+            .map_err(|e| anyhow!("{e}"))?;
+            writeln!(
+                std::io::stdout().lock(),
+                "Send approval mode: {}",
+                mode.as_str()
+            )?;
+            return Ok(());
+        }
+        _ => {}
+    }
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     execute(
@@ -124,6 +233,9 @@ fn execute<C: Clock + Clone>(
         }
         ApprovalsAction::Grant { id, yes } => {
             grant(&pending, &id, yes, input, out, clock.unix_secs())
+        }
+        ApprovalsAction::Rules { .. } | ApprovalsAction::Mode => {
+            bail!("handled before the approvals database is opened")
         }
         ApprovalsAction::Deny { id } => {
             let id = parse_id(&id)?;

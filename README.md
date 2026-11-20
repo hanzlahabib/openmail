@@ -160,6 +160,8 @@ Global flags: `--config <PATH>` (env `OPENMAIL_CONFIG`; default `$XDG_CONFIG_HOM
 
 Exit codes: 0 success, 1 runtime failure, 2 usage error.
 
+Who approves sending (owner only, standing rules or delegated): [docs/deployment/SEND_APPROVAL.md](docs/deployment/SEND_APPROVAL.md).
+
 Mailbox management on a server (`accounts add|remove`, `accounts.d/`, secret files, `failure` diagnostics): [docs/deployment/ACCOUNTS.md](docs/deployment/ACCOUNTS.md).
 
 ## Multi-account

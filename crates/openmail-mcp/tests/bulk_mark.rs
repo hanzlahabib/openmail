@@ -147,3 +147,50 @@ async fn needs_organize_permission_on_the_account_and_scope() {
     assert_eq!(code(&r2), "READ_ONLY_ACCOUNT");
     assert!(writes.lock().unwrap().is_empty() && writes2.lock().unwrap().is_empty());
 }
+
+async fn call_tool(c: &Client, name: &str, args: Value) -> CallToolResult {
+    let Value::Object(map) = args else { panic!() };
+    c.call_tool(CallToolRequestParams::new(name.to_owned()).with_arguments(map))
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn mark_all_read_needs_confirm_counts_first_and_marks_every_unread_message() {
+    let (c, writes) = connect(&[Action::Read, Action::Organize]).await;
+    let no = call_tool(&c, "mail_mark_all_read", json!({"account": "work"})).await;
+    assert_eq!(code(&no), "INVALID_INPUT");
+    let dry = call_tool(
+        &c,
+        "mail_mark_all_read",
+        json!({"account": "work", "dry_run": true}),
+    )
+    .await;
+    let v = dry.structured_content.unwrap();
+    assert_eq!(
+        (v["matched"].clone(), v["marked_read"].clone()),
+        (json!(2), json!(0))
+    );
+    assert!(writes.lock().unwrap().is_empty());
+    let done = call_tool(
+        &c,
+        "mail_mark_all_read",
+        json!({"account": "work", "confirm": true}),
+    )
+    .await;
+    let v = done.structured_content.unwrap();
+    assert_eq!(
+        (v["marked_read"].clone(), v["truncated"].clone()),
+        (json!(2), json!(false))
+    );
+    let mut w = writes.lock().unwrap().clone();
+    w.sort();
+    assert_eq!(w, ["seen:2:true", "seen:3:true"]);
+    let denied = call_tool(
+        &c,
+        "mail_mark_all_read",
+        json!({"account": "personal", "confirm": true}),
+    )
+    .await;
+    assert_eq!(code(&denied), "READ_ONLY_ACCOUNT");
+}
