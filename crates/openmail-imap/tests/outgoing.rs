@@ -405,13 +405,9 @@ async fn sent_copy_appears_seen_and_requires_send_permission() {
     assert_eq!(sent.items[0].subject.0, "Delivered");
     assert!(sent.items[0].flags.seen, "Sent copy is stored \\Seen");
 
-    let nofolder = cfg(&env, |c| c.permissions.send = true);
-    assert_eq!(
-        nofolder
-            .append_sent(&a, b"x".to_vec())
-            .await
-            .unwrap_err()
-            .code(),
-        ErrorCode::FolderNotFound
-    );
+    // No configured folder and (on GreenMail) no advertised special-use: the conventional
+    // name "Sent" is found, so a stock Dovecot without RFC 6154 still gets its copy.
+    let unconfigured = cfg(&env, |c| c.permissions.send = true);
+    unconfigured.append_sent(&a, b"x".to_vec()).await.unwrap();
+    assert_eq!(count(&env, "Sent").await, 2);
 }

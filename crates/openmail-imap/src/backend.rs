@@ -115,6 +115,7 @@ impl ImapBackend {
         .into_iter()
         .find(|(configured, _)| configured.as_deref() == Some(name))
         .map(|(_, role)| role.to_owned())
+        .or_else(|| role_from_conventional_name(name))
     }
 
     async fn fetch_raw_message(
@@ -536,5 +537,35 @@ impl MailOrganizer for ImapBackend {
             })
         });
         new_ref.ok_or_else(|| Error::new(ErrorCode::Internal, "message was moved but the server did not report its new UID; re-list the destination folder"))
+    }
+}
+
+/// Servers without RFC 6154 special-use (a stock Dovecot Maildir, for one) still name their
+/// system folders conventionally. Used only after advertised attributes and explicit config,
+/// and matched on the whole leaf name, so a user folder like "Sent to HR" is not picked up.
+fn role_from_conventional_name(name: &str) -> Option<String> {
+    let leaf = name.rsplit(['/', '.']).next().unwrap_or(name).trim();
+    let role = match leaf.to_ascii_lowercase().as_str() {
+        "sent" | "sent items" | "sent mail" | "sent messages" => "sent",
+        "drafts" | "draft" => "drafts",
+        "archive" | "archives" => "archive",
+        "trash" | "deleted items" | "deleted messages" | "bin" => "trash",
+        "junk" | "spam" | "junk e-mail" => "junk",
+        _ => return None,
+    };
+    Some(role.into())
+}
+
+#[cfg(test)]
+mod conventional_role_tests {
+    use super::role_from_conventional_name as r;
+
+    #[test]
+    fn maps_conventional_leaf_names_only() {
+        assert_eq!(r("Sent").as_deref(), Some("sent"));
+        assert_eq!(r("INBOX.Sent Items").as_deref(), Some("sent"));
+        assert_eq!(r("Deleted Items").as_deref(), Some("trash"));
+        assert_eq!(r("Sent to HR"), None);
+        assert_eq!(r("Projects/Archive").as_deref(), Some("archive"));
     }
 }
