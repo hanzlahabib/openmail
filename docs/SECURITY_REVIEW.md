@@ -27,3 +27,23 @@ Fix F1, F2 (and add a test that fails if any tool skips `authorize()`), F3, F4; 
 
 ## Update after hardening wave (verified by running)
 Full workspace: `cargo clippy --workspace --all-targets -D warnings` clean; `cargo test --workspace --no-fail-fast` all pass with `OPENMAIL_REQUIRE_DOCKER=1` (real GreenMail). A real-binary stdio E2E (3 tests) also found and fixed a real leak: rmcp debug logging wrote mail bodies to logs. F4, F5 remain open; Gate 5 is still NOT passed (needs an independent re-review that executes the tests, and the unverified list above).
+
+
+## Review of the OAuth server, send policy and account registry (2026-11-20)
+
+Adversarial read by a fresh-context reviewer (not independent of the project). Fixed in code, with tests:
+
+| # | Finding | Status |
+|---|---|---|
+| H1 | Delegated mode: forward and mass sends needed no owner gate; cap counted messages, not recipients; `user_confirmed` is only an instruction to the model | Forwarding is human-only in every mode; delegated sends limited to 5 recipients and a recipient-counted daily cap; `user_confirmed` documented as not a boundary |
+| H2 | Consent phishing via open dynamic registration + shared ChatGPT redirect | Registration closes after the first login (owner opens a window with `oauth registration open`); consent page shows redirect host and client age |
+| M1 | Anonymous owner lockout | 5 wrong passwords destroy that consent page; global pause only after 30 failures |
+| M2 | Registration/pending DoS | Per-client pending cap; stale unused clients evicted |
+| M3 | Daily cap overspent by parallel calls | Check-and-record in one write transaction |
+| M4 | Unbounded daily-limit setting | Bounded 1-500, effective value logged |
+| M5 | Argon2 on the async runtime | Runs on the blocking pool |
+| L1 | Unticking every box widened the grant | Refused ("tick at least one") |
+| L3 | send-policy DB and state dir permissions | 0600 / 0700 |
+| - | Public routes had no request timeout | Timeout layer added |
+
+Open: no refresh-token reuse detection or access-token revocation (L2); the pending-approval queue is unbounded and shows the approver a body hash, not the body (L4); drop-in `credential.path` can point at any file the service user may read, which needs write access to the config directory (L5); the per-IP limits trust `X-Forwarded-For` from loopback, so the reverse proxy must set it itself (L6).

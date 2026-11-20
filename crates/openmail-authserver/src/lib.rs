@@ -23,6 +23,21 @@ use axum::Router;
 
 pub use oauth::router;
 
+/// Open registration for `minutes` (1 to 60) by writing the window file the server checks.
+pub fn open_registration_window(state_dir: &std::path::Path, minutes: u32) -> Result<i64, Error> {
+    let until = now() + i64::from(minutes.clamp(1, 60)) * 60;
+    std::fs::create_dir_all(state_dir)
+        .map_err(|e| Error::Config(format!("state dir: {}", e.kind())))?;
+    std::fs::write(state_dir.join(REGISTRATION_WINDOW_FILE), until.to_string())
+        .map_err(|e| Error::Config(format!("writing the registration window: {}", e.kind())))?;
+    Ok(until)
+}
+
+/// Close it immediately.
+pub fn close_registration_window(state_dir: &std::path::Path) {
+    let _ = std::fs::remove_file(state_dir.join(REGISTRATION_WINDOW_FILE));
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("signing key: {0}")]
@@ -57,7 +72,15 @@ const CODE_TTL_SECS: i64 = 60;
 /// Bound on in-memory pending authorizations and codes (unauthenticated endpoints feed them).
 const MAX_IN_FLIGHT: usize = 1000;
 /// Failed owner-password attempts allowed per window before sign-in pauses for everyone.
-const MAX_LOGIN_FAILURES: usize = 5;
+/// Wrong passwords allowed on ONE consent page before it is destroyed.
+pub(crate) const MAX_TX_ATTEMPTS: u32 = 5;
+/// Global pause: high enough that an anonymous attacker burning pages cannot easily lock the
+/// owner out, low enough to make online guessing hopeless (each page also dies after 5).
+const MAX_LOGIN_FAILURES: usize = 30;
+/// Most consent pages one client may have open at once.
+pub(crate) const MAX_PENDING_PER_CLIENT: usize = 20;
+/// File in the state directory holding the unix time until which registration is open.
+const REGISTRATION_WINDOW_FILE: &str = "registration-open-until";
 const LOGIN_WINDOW_SECS: i64 = 300;
 
 #[derive(Debug, Clone)]
@@ -96,6 +119,8 @@ pub(crate) struct Pending {
     pub scope: String,
     pub state: Option<String>,
     pub expires: i64,
+    /// Wrong-password attempts on this one consent page; it is dropped after a few.
+    pub attempts: u32,
 }
 
 pub(crate) struct Code {
@@ -208,6 +233,21 @@ impl AuthServer {
         let mut c = lock(&self.codes);
         c.retain(|_, v| v.expires > t);
         p.len() >= MAX_IN_FLIGHT || c.len() >= MAX_IN_FLIGHT
+    }
+
+    /// Dynamic client registration is open while no client has ever completed a login (first
+    /// connection), or inside a window the owner opened on the server
+    /// (`openmail-mcp oauth registration open`). Otherwise anyone on the internet could mint
+    /// a client that looks like the owner's assistant and phish the consent page.
+    pub(crate) fn registration_open(&self) -> bool {
+        if matches!(self.store.any_client_logged_in(), Ok(false)) {
+            return true;
+        }
+        let until = std::fs::read_to_string(self.cfg.state_dir.join(REGISTRATION_WINDOW_FILE))
+            .ok()
+            .and_then(|t| t.trim().parse::<i64>().ok())
+            .unwrap_or(0);
+        until > now()
     }
 
     pub(crate) fn pending_ttl() -> i64 {

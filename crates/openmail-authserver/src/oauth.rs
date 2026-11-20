@@ -138,6 +138,13 @@ fn redirect_allowed(s: &AuthServer, raw: &str) -> bool {
 }
 
 async fn register(State(s): Srv, Json(req): Json<RegisterRequest>) -> Response {
+    if !s.registration_open() {
+        return json_error(
+            StatusCode::FORBIDDEN,
+            "access_denied",
+            "client registration is closed; the server owner must open it (openmail-mcp oauth registration open)",
+        );
+    }
     let bad = |d: &str| json_error(StatusCode::BAD_REQUEST, "invalid_client_metadata", d);
     if req.redirect_uris.is_empty() || req.redirect_uris.len() > MAX_REDIRECT_URIS {
         return bad("redirect_uris needs 1 to 5 entries");
@@ -168,6 +175,7 @@ async fn register(State(s): Srv, Json(req): Json<RegisterRequest>) -> Response {
         client_id: client_id.clone(),
         name: name.clone(),
         redirect_uris: req.redirect_uris.clone(),
+        created_at: now(),
     };
     match s.store.add_client(&client, now()) {
         Ok(()) => {}
@@ -291,7 +299,13 @@ async fn authorize_get(State(s): Srv, Query(q): Query<AuthorizeQuery>) -> Respon
             g
         }
     };
-    if s.in_flight_full() {
+    if s.in_flight_full()
+        || lock(&s.pending)
+            .values()
+            .filter(|p| p.client_id == client.client_id)
+            .count()
+            >= crate::MAX_PENDING_PER_CLIENT
+    {
         return fail("the server is busy; try again in a few minutes");
     }
     let tx = match random_token() {
@@ -307,11 +321,19 @@ async fn authorize_get(State(s): Srv, Query(q): Query<AuthorizeQuery>) -> Respon
             scope: granted.join(" "),
             state: q.state.clone(),
             expires: now() + AuthServer::pending_ttl(),
+            attempts: 0,
         },
     );
     page(
         StatusCode::OK,
-        pages::consent(&tx, &client.name, &s.cfg.scopes, &granted, None),
+        pages::consent(
+            &tx,
+            &client.name,
+            &client_info(&client, redirect_uri),
+            &s.cfg.scopes,
+            &granted,
+            None,
+        ),
     )
 }
 
@@ -322,17 +344,21 @@ struct AuthorizeForm {
     password: Option<String>,
     decision: String,
     scopes: Vec<String>,
+    /// Present when the form listed checkboxes: an empty selection then means "nothing".
+    scopes_shown: bool,
 }
 
 impl AuthorizeForm {
     fn parse(raw: &[u8]) -> Option<Self> {
         let (mut tx, mut password, mut decision, mut scopes) = (None, None, None, Vec::new());
+        let mut scopes_shown = false;
         for (k, v) in url::form_urlencoded::parse(raw) {
             match k.as_ref() {
                 "tx" => tx = Some(v.into_owned()),
                 "password" => password = Some(v.into_owned()),
                 "decision" => decision = Some(v.into_owned()),
                 "scope" => scopes.push(v.into_owned()),
+                "scopes_shown" => scopes_shown = true,
                 _ => {}
             }
         }
@@ -341,6 +367,7 @@ impl AuthorizeForm {
             password,
             decision: decision?,
             scopes,
+            scopes_shown,
         })
     }
 }
@@ -371,24 +398,22 @@ async fn authorize_post(State(s): Srv, RawForm(raw): RawForm) -> Response {
         lock(&s.pending).remove(&f.tx);
         return err_redirect(&s, &redirect_uri, state.as_deref(), "access_denied");
     }
-    let name = s
-        .store
-        .client(&client_id)
-        .ok()
-        .flatten()
-        .map_or_else(|| "Application".to_owned(), |c| c.name);
+    let (name, info) = s.store.client(&client_id).ok().flatten().map_or_else(
+        || ("Application".to_owned(), String::new()),
+        |c| (c.name.clone(), client_info(&c, &redirect_uri)),
+    );
     let checked: Vec<String> = scope.split(' ').map(str::to_owned).collect();
     let retry = |status: StatusCode, msg: &str| {
         page(
             status,
-            pages::consent(&f.tx, &name, &s.cfg.scopes, &checked, Some(msg)),
+            pages::consent(&f.tx, &name, &info, &s.cfg.scopes, &checked, Some(msg)),
         )
     };
     // What the owner granted: everything, the ticked boxes, or (no boxes sent) what was requested.
     // Only scopes this server defines can ever appear.
     let granted_scope = if f.decision == "allow_all" {
         s.cfg.scopes.join(" ")
-    } else if f.scopes.is_empty() {
+    } else if f.scopes.is_empty() && !f.scopes_shown {
         scope.clone()
     } else {
         s.cfg
@@ -408,9 +433,39 @@ async fn authorize_post(State(s): Srv, RawForm(raw): RawForm) -> Response {
             "Too many failed attempts. Try again in a few minutes.",
         );
     }
-    if !verify_owner(&s, f.password.as_deref().unwrap_or_default()) {
+    // Argon2 is deliberately slow: keep it off the async workers.
+    let verifier = Arc::clone(&s);
+    let password = f.password.clone().unwrap_or_default();
+    let valid = tokio::task::spawn_blocking(move || verify_owner(&verifier, &password))
+        .await
+        .unwrap_or(false);
+    if !valid {
         s.note_login_failure();
         tracing::warn!("owner sign-in failed on the authorization page");
+        // One consent page cannot be used to guess forever: it is destroyed after a few misses.
+        let burned = {
+            let mut p = lock(&s.pending);
+            match p.get_mut(&f.tx) {
+                Some(x) => {
+                    x.attempts += 1;
+                    if x.attempts >= crate::MAX_TX_ATTEMPTS {
+                        p.remove(&f.tx);
+                        true
+                    } else {
+                        false
+                    }
+                }
+                None => true,
+            }
+        };
+        if burned {
+            return page(
+                StatusCode::UNAUTHORIZED,
+                pages::error(
+                    "Too many wrong passwords on this page. Start again from the application.",
+                ),
+            );
+        }
         return retry(StatusCode::UNAUTHORIZED, "Wrong password.");
     }
     s.clear_login_failures();
@@ -439,6 +494,26 @@ async fn authorize_post(State(s): Srv, RawForm(raw): RawForm) -> Response {
         p.push(("state", st));
     }
     redirect_to(&s, &pending.redirect_uri, &p)
+}
+
+/// What the owner can check before typing the password: where the code will be sent and how new
+/// this client is. A lookalike registered a minute ago is a red flag.
+fn client_info(c: &Client, redirect_uri: &str) -> String {
+    let host = Url::parse(redirect_uri)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_owned))
+        .unwrap_or_else(|| "unknown".to_owned());
+    let age = (now() - c.created_at).max(0);
+    let when = if age < 3600 {
+        format!("{} min ago", age / 60)
+    } else if age < 172_800 {
+        format!("{} h ago", age / 3600)
+    } else {
+        format!("{} days ago", age / 86_400)
+    };
+    format!(
+        "After you approve, the result is sent to {host}. This application was registered {when}. If you did not just start this connection yourself, close this page."
+    )
 }
 
 fn verify_owner(s: &AuthServer, password: &str) -> bool {

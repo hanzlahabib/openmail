@@ -31,6 +31,12 @@ pub const MAX_RULE_PER_DAY: u32 = 500;
 pub const MAX_RULE_RECIPIENTS: usize = 10;
 /// Default ceiling for `Delegated` mode per account and day.
 pub const DEFAULT_DELEGATED_DAILY_LIMIT: u32 = 25;
+/// Per message in delegated mode. Mass mailing is a human decision; a prompt-injected agent that
+/// can reach 100 recipients in one call defeats the daily cap.
+pub const DEFAULT_DELEGATED_MAX_RECIPIENTS: usize = 5;
+/// Appended to the principal by tools whose automatic approval must never apply (forwarding
+/// existing mail is the exfiltration path of a prompt injection). Such sends need a human token.
+pub const HUMAN_ONLY_SUFFIX: &str = "#human-only";
 const DAY_SECS: u64 = 86_400;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -285,9 +291,63 @@ impl SendPolicyStore {
         Ok(None)
     }
 
-    /// Delegated-mode gate: true while the account is under its daily ceiling.
-    fn delegated_ok(&self, account: &AccountId, limit: u32, now: u64) -> Result<bool> {
-        Ok(self.sent_today(account.as_str(), None, now)? < limit)
+    /// Atomically check the account's daily ceiling (counted in RECIPIENTS) and reserve the send.
+    /// Check and insert share one write transaction, so parallel calls cannot overspend the cap.
+    fn reserve_delegated(
+        &self,
+        account: &AccountId,
+        recipients: u32,
+        limit: u32,
+        now: u64,
+    ) -> Result<bool> {
+        let mut c = self.lock();
+        let tx = c
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(db)?;
+        let used: u32 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM send_log WHERE account = ?1 AND at > ?2",
+                params![account.as_str(), i(now.saturating_sub(DAY_SECS))],
+                |r| r.get(0),
+            )
+            .map_err(db)?;
+        if used.saturating_add(recipients) > limit {
+            return Ok(false);
+        }
+        for _ in 0..recipients {
+            tx.execute(
+                "INSERT INTO send_log (account, at, via, rule_id) VALUES (?1, ?2, 'delegated', NULL)",
+                params![account.as_str(), i(now)],
+            )
+            .map_err(db)?;
+        }
+        tx.commit().map_err(db)?;
+        Ok(true)
+    }
+
+    /// Same, for a standing rule's per-day quota (counted in messages).
+    fn reserve_rule(&self, rule: &Rule, now: u64) -> Result<bool> {
+        let mut c = self.lock();
+        let tx = c
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(db)?;
+        let used: u32 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM send_log WHERE rule_id = ?1 AND at > ?2",
+                params![rule.id, i(now.saturating_sub(DAY_SECS))],
+                |r| r.get(0),
+            )
+            .map_err(db)?;
+        if used >= rule.max_per_day {
+            return Ok(false);
+        }
+        tx.execute(
+            "INSERT INTO send_log (account, at, via, rule_id) VALUES (?1, ?2, 'rule', ?3)",
+            params![rule.account.as_str(), i(now), rule.id],
+        )
+        .map_err(db)?;
+        tx.commit().map_err(db)?;
+        Ok(true)
     }
 }
 
@@ -298,6 +358,7 @@ pub struct PolicyConsumer<V, C> {
     inner: V,
     clock: C,
     delegated_daily_limit: u32,
+    delegated_max_recipients: usize,
 }
 
 impl<V, C> std::fmt::Debug for PolicyConsumer<V, C> {
@@ -322,7 +383,14 @@ impl<V, C> PolicyConsumer<V, C> {
             inner,
             clock,
             delegated_daily_limit,
+            delegated_max_recipients: DEFAULT_DELEGATED_MAX_RECIPIENTS,
         }
+    }
+
+    #[must_use]
+    pub fn with_delegated_max_recipients(mut self, n: usize) -> Self {
+        self.delegated_max_recipients = n.max(1);
+        self
     }
 }
 
@@ -336,8 +404,8 @@ impl<V: ApprovalConsumer, C: Clock> ApprovalConsumer for PolicyConsumer<V, C> {
         let now = self.clock.unix_secs();
         let account = descriptor.account();
         // A human-granted token always wins and is always consumed; automatic paths only apply
-        // when the caller presented none.
-        if token.is_some() {
+        // when the caller presented none, and never for human-only actions (forwarding).
+        if token.is_some() || principal.ends_with(HUMAN_ONLY_SUFFIX) {
             self.inner.consume(principal, descriptor, token)?;
             self.store.record(account.as_str(), "human", None, now)?;
             return Ok(());
@@ -345,23 +413,27 @@ impl<V: ApprovalConsumer, C: Clock> ApprovalConsumer for PolicyConsumer<V, C> {
         match self.mode {
             ApprovalMode::OwnerOnly => self.inner.consume(principal, descriptor, None),
             ApprovalMode::Rules => {
-                if let Some(rule) = self.store.rule_for(account, descriptor.recipients(), now)? {
+                if let Some(rule) = self.store.rule_for(account, descriptor.recipients(), now)?
+                    && self.store.reserve_rule(&rule, now)?
+                {
                     tracing::info!(account = %account, rule = rule.id, "send allowed by standing rule");
-                    self.store
-                        .record(account.as_str(), "rule", Some(rule.id), now)?;
                     Ok(())
                 } else {
                     self.inner.consume(principal, descriptor, None)
                 }
             }
             ApprovalMode::Delegated => {
+                let n = descriptor.recipients().len();
+                if n == 0 || n > self.delegated_max_recipients {
+                    // Mass mailing is never delegated: it needs a human token.
+                    return self.inner.consume(principal, descriptor, None);
+                }
+                let n32 = u32::try_from(n).unwrap_or(u32::MAX);
                 if self
                     .store
-                    .delegated_ok(account, self.delegated_daily_limit, now)?
+                    .reserve_delegated(account, n32, self.delegated_daily_limit, now)?
                 {
-                    tracing::info!(account = %account, "send allowed by delegated approval");
-                    self.store
-                        .record(account.as_str(), "delegated", None, now)?;
+                    tracing::info!(account = %account, recipients = n, "send allowed by delegated approval");
                     Ok(())
                 } else {
                     Err(Error::new(

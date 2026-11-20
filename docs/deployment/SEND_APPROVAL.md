@@ -9,9 +9,9 @@ Set `OPENMAIL_SEND_APPROVAL` in the service environment (`/etc/openmail/env`) an
 |---|---|---|
 | `owner_only` (default) | Every send needs a single-use approval that **you** grant on the server (`openmail-mcp approvals grant <request-id>`). | Normal use. |
 | `rules` | You pre-authorize narrow standing rules ("allow always"); a send that matches a live rule proceeds, anything else still needs you. | Repeated sends to known recipients. |
-| `delegated` | The connected client's own confirmation (ChatGPT's "allow this action") is the gate. OpenMail only enforces a daily cap per account (`OPENMAIL_SEND_DELEGATED_DAILY_LIMIT`, default 25). | You accept that a compromised or tricked client can send, up to the cap. |
+| `delegated` | The connected client's own confirmation (ChatGPT's "allow this action") is the gate. OpenMail enforces limits only: at most 5 recipients per message (more needs you), and a daily cap per account counted in **recipients** (`OPENMAIL_SEND_DELEGATED_DAILY_LIMIT`, default 25, allowed 1-500; parallel calls cannot overspend it). **Forwarding is never delegated.** | You accept that a compromised or tricked client can send ordinary mail up to the cap. |
 
-A human-granted token works in every mode. Every automatic decision is logged and counted.
+A human-granted token works in every mode. **`mail_forward_approved` always needs a human token, in every mode**, because forwarding existing mail is how a prompt injection exfiltrates a mailbox. `user_confirmed` on compose-and-send is an instruction to the model, not a security boundary: the owner's mode and caps are. Every automatic decision is logged and counted.
 
 ## The "ask, then allow once / allow always" flow
 

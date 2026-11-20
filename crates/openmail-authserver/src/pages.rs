@@ -45,6 +45,7 @@ fn describe(scope: &str) -> &str {
 pub fn consent(
     tx: &str,
     client_name: &str,
+    client_info: &str,
     offered: &[String],
     checked: &[String],
     error: Option<&str>,
@@ -67,7 +68,8 @@ pub fn consent(
         "Authorize access to OpenMail",
         &format!(
             "<h1>Authorize access</h1><p><strong>{}</strong> wants to use your OpenMail server. Choose what it may do:</p>\
-<form method=\"post\" action=\"/authorize\"><input type=\"hidden\" name=\"tx\" value=\"{}\"><ul class=\"scopes\">{boxes}</ul>\
+<p class=\"note\">{}</p>\
+<form method=\"post\" action=\"/authorize\"><input type=\"hidden\" name=\"tx\" value=\"{}\"><input type=\"hidden\" name=\"scopes_shown\" value=\"1\"><ul class=\"scopes\">{boxes}</ul>\
 <p>Only approve applications you started yourself. Sign in as the owner to continue.</p>{err}\
 <p class=\"note\"><strong>This is your OpenMail owner password</strong>, the one you set for this OpenMail server. It is not your email password and not your ChatGPT password. Mailbox passwords are configured on the server, never here.</p>\
 <label>Owner password<br><input type=\"password\" name=\"password\" autocomplete=\"current-password\" autofocus></label><br>\
@@ -75,6 +77,7 @@ pub fn consent(
 <button type=\"submit\" name=\"decision\" value=\"allow_all\">Approve ALL permissions</button> \
 <button type=\"submit\" name=\"decision\" value=\"deny\" class=\"deny\">Deny</button></form>",
             escape(client_name),
+            escape(client_info),
             escape(tx)
         ),
     )

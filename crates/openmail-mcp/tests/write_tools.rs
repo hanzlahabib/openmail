@@ -146,7 +146,8 @@ struct TestOutgoing {
     behaviour: Mutex<Behaviour>,
     attempts: AtomicUsize,
     sent: Mutex<Vec<SendRequest>>,
-    pending: Mutex<Vec<(String, SendRequestDescriptor)>>,
+    /// (request id, principal the request was made for, exact request): the approval is bound to all three.
+    pending: Mutex<Vec<(String, String, SendRequestDescriptor)>>,
 }
 
 impl TestOutgoing {
@@ -171,11 +172,11 @@ impl TestOutgoing {
             }
         }
         let pending = self.pending.lock().unwrap();
-        let (_, d) = pending
+        let (_, who, d) = pending
             .iter()
-            .find(|(id, _)| id == request_id)
+            .find(|(id, _, _)| id == request_id)
             .expect("unknown pending request id");
-        let intent = SendIntent::from_descriptor("agent", d).unwrap();
+        let intent = SendIntent::from_descriptor(who, d).unwrap();
         self.issuer
             .issue(&Yes, &intent, Duration::from_secs(300))
             .unwrap()
@@ -198,12 +199,12 @@ impl Outgoing for TestOutgoing {
     }
     fn request_approval(
         &self,
-        _principal: &str,
+        principal: &str,
         d: &SendRequestDescriptor,
     ) -> openmail_core::Result<String> {
         let mut p = self.pending.lock().unwrap();
         let id = format!("pending-{}", p.len() + 1);
-        p.push((id.clone(), d.clone()));
+        p.push((id.clone(), principal.to_owned(), d.clone()));
         Ok(id)
     }
     fn send<'a>(

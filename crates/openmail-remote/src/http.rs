@@ -362,7 +362,11 @@ pub fn router(config: HttpConfig, mcp: Router, readiness: Readiness) -> Result<R
         .with_state(state.clone())
         .nest(MCP_PATH, protected);
     if let Some(public) = public_routes {
-        app = app.merge(public);
+        // A client that dribbles bytes must not hold a connection open forever on these routes.
+        app = app.merge(public.layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            state.config.request_timeout,
+        )));
     }
     Ok(app
         // Outermost so unauthenticated floods are throttled before auth work.

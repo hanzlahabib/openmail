@@ -58,6 +58,8 @@ chmod 600 /etc/openmail/owner.hash
 
 The proxy must pass these paths to the service unauthenticated: `/.well-known/oauth-protected-resource`,
 `/.well-known/oauth-authorization-server`, `/authorize`, `/token`, `/register`, `/jwks.json`, plus `/mcp`.
+**Registration is closed after the first successful login.** Anyone on the internet could otherwise register a client that looks like your assistant and lure you to the consent page. To add another connector later, open a window on the server: `openmail-ctl oauth registration open --minutes 10` (it closes by itself; `... close` ends it). The consent page shows the redirect host and how recently the client was registered, and a page dies after 5 wrong passwords (30 failures overall pause sign-in for 5 minutes).
+
 Limits: one owner, no consent memory (each new connection asks again), no token revocation endpoint (delete
 `oauth/oauth.db` to revoke everything, change the password hash to stop new sign-ins).
 
