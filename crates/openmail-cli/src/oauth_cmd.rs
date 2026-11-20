@@ -6,13 +6,40 @@ use std::io::{Read, Write as _};
 
 use anyhow::{Context, Result, anyhow};
 
-use crate::cli::{OauthAction, OauthArgs};
+use crate::cli::{OauthAction, OauthArgs, RegistrationAction};
 
 /// A password is a line, not a file: refuse anything larger instead of hashing garbage.
 const MAX_PASSWORD_BYTES: u64 = 1024;
 
+/// Same directory `serve` gives the built-in OAuth server: `<state dir>/oauth`.
+fn oauth_dir() -> Result<std::path::PathBuf> {
+    crate::brief_cmd::state_dir()
+        .map(|d| d.join("oauth"))
+        .ok_or_else(|| anyhow!("cannot locate the state directory; set OPENMAIL_STATE_DIR"))
+}
+
 pub fn run(args: OauthArgs) -> Result<()> {
     match args.action {
+        OauthAction::Registration { action } => {
+            let dir = oauth_dir()?;
+            let mut out = std::io::stdout().lock();
+            match action {
+                RegistrationAction::Open { minutes } => {
+                    openmail_authserver::open_registration_window(&dir, minutes)
+                        .map_err(|e| anyhow!("{e}"))?;
+                    writeln!(
+                        out,
+                        "Registration is open for {} minute(s). Add the connector now; it closes by itself.",
+                        minutes.clamp(1, 60)
+                    )?;
+                }
+                RegistrationAction::Close => {
+                    openmail_authserver::close_registration_window(&dir);
+                    writeln!(out, "Registration window closed.")?;
+                }
+            }
+            Ok(())
+        }
         OauthAction::HashPassword => {
             let mut raw = String::new();
             std::io::stdin()

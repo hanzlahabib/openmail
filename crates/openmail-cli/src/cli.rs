@@ -65,6 +65,22 @@ pub enum OauthAction {
     /// OPENMAIL_OAUTH_OWNER_PASSWORD_HASH_FILE). Example:
     /// `read -rs P; printf %s "$P" | openmail-mcp oauth hash-password > owner.hash`
     HashPassword,
+    /// Open or close the short window during which a NEW client (for example a freshly added ChatGPT
+    /// connector) may register. After the first successful login registration is closed.
+    Registration {
+        #[command(subcommand)]
+        action: RegistrationAction,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum RegistrationAction {
+    /// Allow new client registrations for a while (default 10 minutes, max 60).
+    Open {
+        #[arg(long, default_value_t = 10)]
+        minutes: u32,
+    },
+    Close,
 }
 
 #[derive(Debug, Args)]

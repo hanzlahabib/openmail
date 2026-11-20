@@ -138,3 +138,89 @@ fn delegated_mode_trusts_the_client_but_enforces_the_daily_cap() {
         ErrorCode::LimitExceeded
     );
 }
+
+fn attempt_many(c: &impl ApprovalConsumer, principal: &str, to: &[&str]) -> Result<()> {
+    let mut r = request(to[0]);
+    r.to = to
+        .iter()
+        .map(|e| Address {
+            name: None,
+            email: (*e).to_owned(),
+        })
+        .collect();
+    r.idempotency_key = format!("k-{}", to.join(","));
+    ApprovalProof::obtain(c, principal, &acc(), &r, None).map(|_| ())
+}
+
+#[test]
+fn delegated_mode_counts_recipients_and_never_delegates_mass_mailing() {
+    let store = Arc::new(SendPolicyStore::open_in_memory().unwrap());
+    let c = consumer(ApprovalMode::Delegated, &store, 6);
+    let five: Vec<String> = (0..5).map(|i| format!("u{i}@example.com")).collect();
+    let five_ref: Vec<&str> = five.iter().map(String::as_str).collect();
+    assert!(
+        attempt_many(&c, "chatgpt", &five_ref).is_ok(),
+        "5 recipients fit the 6 cap"
+    );
+    // 5 of 6 used: another 2-recipient message would exceed the cap.
+    assert_eq!(
+        attempt_many(&c, "chatgpt", &["a@example.com", "b@example.com"])
+            .unwrap_err()
+            .code(),
+        ErrorCode::LimitExceeded
+    );
+    assert!(attempt_many(&c, "chatgpt", &["a@example.com"]).is_ok());
+    // More recipients than the per-message limit: a human is required, whatever the cap says.
+    let big = (0..6)
+        .map(|i| format!("v{i}@example.com"))
+        .collect::<Vec<_>>();
+    let big_ref: Vec<&str> = big.iter().map(String::as_str).collect();
+    let fresh = Arc::new(SendPolicyStore::open_in_memory().unwrap());
+    let c2 = consumer(ApprovalMode::Delegated, &fresh, 1000);
+    assert_eq!(
+        attempt_many(&c2, "chatgpt", &big_ref).unwrap_err().code(),
+        ErrorCode::SendNotApproved
+    );
+}
+
+#[test]
+fn human_only_actions_such_as_forwarding_are_never_auto_approved() {
+    use openmail_security::send_policy::HUMAN_ONLY_SUFFIX;
+    let principal = format!("chatgpt{HUMAN_ONLY_SUFFIX}");
+    let t = openmail_security::Clock::unix_secs(&SystemClock::new());
+    for mode in [ApprovalMode::Rules, ApprovalMode::Delegated] {
+        let store = Arc::new(SendPolicyStore::open_in_memory().unwrap());
+        store
+            .add_rule(&acc(), "@example.com", 10, 7, "", t)
+            .unwrap();
+        let c = consumer(mode, &store, 100);
+        let e = attempt_many(&c, &principal, &["a@example.com"]).unwrap_err();
+        assert_eq!(e.code(), ErrorCode::SendNotApproved, "{mode:?}");
+        // The same call as an ordinary send is allowed, proving the suffix is what blocked it.
+        assert!(
+            attempt_many(&c, "chatgpt", &["a@example.com"]).is_ok(),
+            "{mode:?}"
+        );
+    }
+}
+
+#[test]
+fn parallel_sends_cannot_overspend_the_daily_cap() {
+    let store = Arc::new(SendPolicyStore::open_in_memory().unwrap());
+    let c = Arc::new(consumer(ApprovalMode::Delegated, &store, 3));
+    let ok = Arc::new(AtomicUsize::new(0));
+    let handles: Vec<_> = (0..16)
+        .map(|i| {
+            let (c, ok) = (Arc::clone(&c), Arc::clone(&ok));
+            std::thread::spawn(move || {
+                if attempt_many(&*c, "chatgpt", &[&format!("p{i}@example.com")]).is_ok() {
+                    ok.fetch_add(1, Ordering::SeqCst);
+                }
+            })
+        })
+        .collect();
+    for h in handles {
+        h.join().unwrap();
+    }
+    assert_eq!(ok.load(Ordering::SeqCst), 3);
+}

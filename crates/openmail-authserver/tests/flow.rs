@@ -48,6 +48,8 @@ fn env() -> Env {
         refresh_ttl: Duration::from_secs(86_400),
     })
     .unwrap();
+    // Most tests register several clients; the closed-registration rule has its own test.
+    openmail_authserver::open_registration_window(dir.path(), 60).unwrap();
     Env {
         app: router(Arc::clone(&server)),
         server,
@@ -375,21 +377,102 @@ async fn registration_and_authorization_reject_unsafe_requests() {
 }
 
 #[tokio::test]
-async fn wrong_password_is_refused_and_repeated_failures_pause_sign_in() {
+async fn one_consent_page_dies_after_five_wrong_passwords_and_many_failures_pause_sign_in() {
     let e = env();
     let (_, reg) = register(&e.app, REDIRECT).await;
     let cid = reg["client_id"].as_str().unwrap();
     let tx = open_consent(&e.app, cid).await;
-    for _ in 0..5 {
-        let (st, h, _) = approve(&e.app, &tx, "not the password").await;
-        assert_eq!(st, StatusCode::UNAUTHORIZED);
+    for n in 1..=5 {
+        let (st, h, body) = approve(&e.app, &tx, "not the password").await;
+        assert_eq!(st, StatusCode::UNAUTHORIZED, "attempt {n}");
         assert!(h.get(header::LOCATION).is_none());
+        assert_eq!(body.contains("Too many wrong passwords"), n == 5);
     }
-    // Even the right password is paused now.
+    // The page is gone: even the right password cannot be tried on it.
     assert_eq!(
         approve(&e.app, &tx, PASSWORD).await.0,
+        StatusCode::BAD_REQUEST
+    );
+
+    // Spread over many pages the failures still add up to a global pause (30 in the window).
+    for _ in 0..5 {
+        let tx = open_consent(&e.app, cid).await;
+        for _ in 0..5 {
+            approve(&e.app, &tx, "nope").await;
+        }
+    }
+    let fresh = open_consent(&e.app, cid).await;
+    assert_eq!(
+        approve(&e.app, &fresh, PASSWORD).await.0,
         StatusCode::TOO_MANY_REQUESTS
     );
+}
+
+#[tokio::test]
+async fn registration_closes_after_the_first_login_until_the_owner_opens_a_window() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = AuthServer::open(Config {
+        issuer: ISSUER.into(),
+        resource: RESOURCE.into(),
+        owner_password_hash: hash_password(PASSWORD).unwrap(),
+        state_dir: dir.path().to_owned(),
+        scopes: vec!["mail:read".into()],
+        allowed_redirect_hosts: vec!["chatgpt.com".into()],
+        access_ttl: Duration::from_secs(60),
+        refresh_ttl: Duration::from_secs(60),
+    })
+    .unwrap();
+    let e = Env {
+        app: router(Arc::clone(&server)),
+        server,
+        _dir: tempfile::tempdir().unwrap(),
+    };
+    // First connection: open, because nobody has logged in yet.
+    let (st, _) = register(&e.app, REDIRECT).await;
+    assert_eq!(st, StatusCode::CREATED);
+    // A registration alone does not close it (nothing proves the owner connected).
+    assert_eq!(register(&e.app, REDIRECT).await.0, StatusCode::CREATED);
+    full_login(&e).await;
+    // Now anyone on the internet minting a lookalike client is refused.
+    let (st, body) = register(&e.app, REDIRECT).await;
+    assert_eq!(st, StatusCode::FORBIDDEN);
+    assert_eq!(body["error"], "access_denied");
+    // The owner opens a window on the server; it works, then closes again.
+    openmail_authserver::open_registration_window(dir.path(), 5).unwrap();
+    assert_eq!(register(&e.app, REDIRECT).await.0, StatusCode::CREATED);
+    openmail_authserver::close_registration_window(dir.path());
+    assert_eq!(register(&e.app, REDIRECT).await.0, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn the_consent_page_shows_where_the_result_goes_and_unticking_everything_is_refused() {
+    let e = env();
+    let (_, reg) = register(&e.app, REDIRECT).await;
+    let cid = reg["client_id"].as_str().unwrap();
+    let (_, _, html) = send(
+        &e.app,
+        Request::get(authorize_url(cid, ""))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert!(html.contains("sent to chatgpt.com"), "{html}");
+    assert!(html.contains("registered 0 min ago"));
+    // All boxes unticked (scopes_shown present, no scope fields): refused, not silently widened.
+    let tx = open_consent(&e.app, cid).await;
+    let (st, h, body) = send(
+        &e.app,
+        form(
+            "/authorize",
+            &format!(
+                "tx={tx}&scopes_shown=1&decision=allow&password={}",
+                urlencode(PASSWORD)
+            ),
+        ),
+    )
+    .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST);
+    assert!(h.get(header::LOCATION).is_none() && body.contains("Tick at least one"));
 }
 
 #[tokio::test]

@@ -153,8 +153,8 @@ impl<B: FullBackend> OpenMailServer<B> {
     #[tool(
         name = "mail_forward_approved",
         description = "Forward a message to new recipients with an optional note of your own. Requires an \
-                       approval_id that the account OWNER granted out of band for exactly this forward; you \
-                       cannot create one. Without a valid id nothing is sent and the error carries a \
+                       approval_id that the account OWNER granted out of band for exactly this forward (forwards are \
+                       NEVER auto-approved, whatever the server's approval mode); you cannot create one. Without a valid id nothing is sent and the error carries a \
                        request_id the owner can approve. Each approval works once. Requires read and send permission.",
         annotations(
             title = "Forward approved message",
@@ -199,7 +199,7 @@ impl<B: FullBackend> OpenMailServer<B> {
             in_reply_to: None,
             references: Vec::new(),
         };
-        self.deliver(&p, cfg, &r, request, input.approval_id.as_deref())
+        self.deliver(&p, cfg, &r, request, input.approval_id.as_deref(), true)
             .await
     }
 }
@@ -270,7 +270,7 @@ impl<B: FullBackend> OpenMailServer<B> {
             in_reply_to: msg.in_reply_to,
             references: msg.references,
         };
-        self.deliver(p, cfg, &r, request, approval).await
+        self.deliver(p, cfg, &r, request, approval, false).await
     }
 
     /// Mode 2: compose in one call. The model's own wording is what gets sent, so the human must
@@ -344,8 +344,15 @@ impl<B: FullBackend> OpenMailServer<B> {
             uid_validity: 0,
             uid: 0,
         };
-        self.deliver(p, cfg, &source, request, input.approval_id.as_deref())
-            .await
+        self.deliver(
+            p,
+            cfg,
+            &source,
+            request,
+            input.approval_id.as_deref(),
+            false,
+        )
+        .await
     }
 
     /// Fail before touching the backend when this deployment cannot send at all.
@@ -405,6 +412,7 @@ impl<B: FullBackend> OpenMailServer<B> {
         source: &MessageRef,
         mut request: SendRequest,
         approval: Option<&str>,
+        human_only: bool,
     ) -> Result<Json<SendOut>, ToolError> {
         let outgoing = self
             .outgoing
@@ -417,13 +425,18 @@ impl<B: FullBackend> OpenMailServer<B> {
             outgoing,
             pending: Mutex::new(None),
         };
-        let proof = match ApprovalProof::obtain(
-            &recorder,
-            principal.client_id(),
-            &cfg.id,
-            &request,
-            approval,
-        ) {
+        // Forwarding existing mail is how a prompt injection exfiltrates: it is bound to a
+        // principal name the policy layer never auto-approves, so it always needs a human token.
+        let who = if human_only {
+            format!(
+                "{}{}",
+                principal.client_id(),
+                openmail_security::send_policy::HUMAN_ONLY_SUFFIX
+            )
+        } else {
+            principal.client_id().to_owned()
+        };
+        let proof = match ApprovalProof::obtain(&recorder, &who, &cfg.id, &request, approval) {
             Ok(proof) => proof,
             Err(e) => {
                 let pending = recorder.pending.lock().ok().and_then(|mut s| s.take());

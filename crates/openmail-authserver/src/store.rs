@@ -23,6 +23,8 @@ pub struct Client {
     pub client_id: String,
     pub name: String,
     pub redirect_uris: Vec<String>,
+    /// Unix seconds; shown on the consent page so a freshly minted client looks fresh.
+    pub created_at: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -105,21 +107,34 @@ impl Store {
         Ok(())
     }
 
+    /// True once any client has completed a login: from then on the owner has a working
+    /// connection, and new registrations need the owner to open a window.
+    pub fn any_client_logged_in(&self) -> Result<bool, Error> {
+        self.lock()
+            .query_row(
+                "SELECT EXISTS (SELECT 1 FROM clients WHERE last_used IS NOT NULL)",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(db)
+    }
+
     pub fn client(&self, id: &str) -> Result<Option<Client>, Error> {
-        let row: Option<(String, String)> = self
+        let row: Option<(String, String, i64)> = self
             .lock()
             .query_row(
-                "SELECT name, redirect_uris FROM clients WHERE client_id = ?1",
+                "SELECT name, redirect_uris, created_at FROM clients WHERE client_id = ?1",
                 [id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()
             .map_err(db)?;
-        row.map(|(name, uris)| {
+        row.map(|(name, uris, created_at)| {
             Ok(Client {
                 client_id: id.to_owned(),
                 name,
                 redirect_uris: serde_json::from_str(&uris).map_err(db)?,
+                created_at,
             })
         })
         .transpose()
@@ -174,6 +189,7 @@ mod tests {
             client_id: format!("c{i}"),
             name: "n".into(),
             redirect_uris: vec![],
+            created_at: 0,
         }
     }
 
