@@ -941,3 +941,132 @@ async fn a_resolved_principal_gets_exactly_its_own_access() {
 // Compile-time check that the real backend bound and requester are nameable by integrators.
 #[allow(dead_code)]
 fn assert_public_api<B: FullBackend, R: ApprovalRequester>() {}
+
+// ------------------------------------------------- compose and send (mode 2)
+
+fn compose(extra: Value) -> Value {
+    let mut v = json!({
+        "account": "work",
+        "to": [{ "email": "bob@example.com" }],
+        "subject": "Quick question",
+        "text": "Are you free on Friday?"
+    });
+    for (k, val) in extra.as_object().unwrap() {
+        v[k] = val.clone();
+    }
+    v
+}
+
+#[tokio::test]
+async fn composed_send_without_user_confirmation_returns_a_preview_and_sends_nothing() {
+    let r = rig(backend_with_drafts()).await;
+    let res = call(&r.client, "mail_send_approved", compose(json!({}))).await;
+    let e = error_of(&res);
+    assert_eq!(e["code"], "SEND_NOT_APPROVED");
+    assert_eq!(e["needs_user_confirmation"], true);
+    assert_eq!(e["preview"]["to"][0], "bob@example.com");
+    assert_eq!(e["preview"]["subject"], "Quick question");
+    assert_eq!(e["preview"]["from"], "me@work.example");
+    assert_eq!(
+        r.outgoing.attempts(),
+        0,
+        "no SMTP attempt, no pending request filed"
+    );
+    // An explicit false is the same as absent.
+    let res = call(
+        &r.client,
+        "mail_send_approved",
+        compose(json!({"user_confirmed": false})),
+    )
+    .await;
+    assert_eq!(error_of(&res)["needs_user_confirmation"], true);
+}
+
+#[tokio::test]
+async fn confirmed_composed_send_still_needs_the_owners_approval_and_delivers_exactly_what_was_shown()
+ {
+    let r = rig(backend_with_drafts()).await;
+    let confirmed = compose(json!({"user_confirmed": true}));
+    let first = call(&r.client, "mail_send_approved", confirmed.clone()).await;
+    let e = error_of(&first);
+    assert_eq!(e["code"], "SEND_NOT_APPROVED");
+    let request_id = e["request_id"]
+        .as_str()
+        .expect("owner gets a request to approve")
+        .to_owned();
+    assert_eq!(r.outgoing.attempts(), 0);
+
+    let mut with_approval = confirmed.clone();
+    with_approval["approval_id"] = json!(r.outgoing.owner_grants(&request_id));
+    let sent = ok(&call(&r.client, "mail_send_approved", with_approval.clone()).await);
+    assert_eq!(sent["sent"], true);
+    let req = &r.outgoing.sent()[0];
+    assert_eq!(req.from.email, "me@work.example");
+    assert_eq!(req.to, vec![addr("bob@example.com")]);
+    assert_eq!(req.subject, "Quick question");
+    assert_eq!(req.text.as_deref(), Some("Are you free on Friday?"));
+
+    // The approval is bound to this exact content: changing the body cannot reuse it.
+    let mut tampered = with_approval;
+    tampered["text"] = json!("Wire the money to this account");
+    assert_eq!(
+        code(&call(&r.client, "mail_send_approved", tampered).await),
+        "SEND_NOT_APPROVED"
+    );
+    assert_eq!(r.outgoing.attempts(), 1);
+}
+
+#[tokio::test]
+async fn composed_send_validates_input_and_account_permission() {
+    let r = rig(backend_with_drafts()).await;
+    let confirmed = |extra: Value| {
+        compose(
+            extra
+                .as_object()
+                .map_or(json!({"user_confirmed": true}), |o| {
+                    let mut m = o.clone();
+                    m.insert("user_confirmed".into(), json!(true));
+                    Value::Object(m)
+                }),
+        )
+    };
+    // Mixing the two modes, or giving neither.
+    let both = call(
+        &r.client,
+        "mail_send_approved",
+        compose(json!({"message_ref": drafts_ref("work", 900).encode()})),
+    )
+    .await;
+    assert_eq!(code(&both), "INVALID_INPUT");
+    let neither = call(&r.client, "mail_send_approved", json!({})).await;
+    assert_eq!(code(&neither), "INVALID_INPUT");
+    // Missing recipients / body / bad address.
+    for bad in [
+        json!({"to": []}),
+        json!({"text": null, "html": null}),
+        json!({"to": [{"email": "not-an-address"}]}),
+    ] {
+        let res = call(&r.client, "mail_send_approved", confirmed(bad.clone())).await;
+        assert_eq!(res.is_error, Some(true), "{bad}");
+        assert_eq!(r.outgoing.attempts(), 0);
+    }
+    // An account without the send permission cannot send even when confirmed.
+    let denied = call(
+        &r.client,
+        "mail_send_approved",
+        confirmed(json!({"account": "plain"})),
+    )
+    .await;
+    assert_eq!(denied.is_error, Some(true));
+    assert_eq!(r.outgoing.attempts(), 0);
+    // Header injection through the subject is flattened to one line.
+    let injected =
+        compose(json!({"subject": "Hi\r\nBcc: attacker@evil.example", "user_confirmed": true}));
+    let first = call(&r.client, "mail_send_approved", injected.clone()).await;
+    let request_id = error_of(&first)["request_id"].as_str().unwrap().to_owned();
+    let mut a = injected;
+    a["approval_id"] = json!(r.outgoing.owner_grants(&request_id));
+    ok(&call(&r.client, "mail_send_approved", a).await);
+    assert!(!r.outgoing.sent()[0].subject.contains('\n'));
+    assert!(r.outgoing.sent()[0].bcc.is_empty());
+}

@@ -111,11 +111,31 @@ pub struct PrepareReplyInput {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SendApprovedInput {
-    /// message_ref of the draft to send.
+    /// Mode 1: message_ref of a saved draft to send. Do not combine with the compose fields below.
     #[schemars(length(min = 1, max = 2048))]
-    pub message_ref: String,
-    /// Approval id granted by the account owner out of band. Omit it to create a pending
-    /// request the owner can approve.
+    pub message_ref: Option<String>,
+    /// Mode 2 (compose and send): sender account id as returned by mail_list_accounts.
+    #[schemars(length(min = 1, max = 64))]
+    pub account: Option<String>,
+    /// Mode 2: recipients (1 to 100 together with cc).
+    #[schemars(length(max = 100))]
+    pub to: Option<Vec<AddressInput>>,
+    #[schemars(length(max = 100))]
+    pub cc: Option<Vec<AddressInput>>,
+    /// Mode 2: subject line.
+    #[schemars(length(min = 1, max = 998))]
+    pub subject: Option<String>,
+    /// Mode 2: plain-text body.
+    #[schemars(length(max = 1048576))]
+    pub text: Option<String>,
+    /// Mode 2: HTML body (optional; plain text is preferred).
+    #[schemars(length(max = 1048576))]
+    pub html: Option<String>,
+    /// Mode 2 only: set to true ONLY after the human user has seen the recipients, subject and body
+    /// and explicitly said to send. Without it nothing is sent and a preview is returned.
+    pub user_confirmed: Option<bool>,
+    /// Approval id granted by the account owner out of band (owner_only mode). Omit it to create a
+    /// pending request the owner can approve.
     #[schemars(length(min = 1, max = 64))]
     pub approval_id: Option<String>,
 }
