@@ -586,6 +586,11 @@ async fn serve_https(
     let mut http = HttpConfig::new(bind);
     http.auth = Some(auth);
     http.public_routes = public_routes;
+    // A model audit of a large mailbox runs long searches in parallel from one client address:
+    // the stock 30 s / 20 per second limits turned that into timeouts and 429s.
+    http.request_timeout = std::time::Duration::from_secs(120);
+    http.rate_per_sec = 60.0;
+    http.rate_burst = 150;
     // The reverse proxy on this host is the only peer that can reach the loopback listener;
     // believing its X-Forwarded-For keeps the per-client rate limit per visitor, not one shared bucket.
     http.trusted_proxies = vec![
