@@ -62,7 +62,14 @@ pub fn render(args: &AccountAddArgs, secret_path: &Path) -> Result<String> {
     let writable = !args.allow.is_empty();
     let mut out = String::from("version = 1\n\n[[account]]\n");
     out.push_str(&format!("id = {}\n", toml_str(&args.id)));
-    out.push_str(&format!("display_name = {}\n", toml_str(&args.id)));
+    let display = args
+        .display_name
+        .as_deref()
+        .map_or(args.id.as_str(), str::trim);
+    if display.is_empty() || display.chars().any(char::is_control) {
+        bail!("--display-name must be non-empty, single-line text");
+    }
+    out.push_str(&format!("display_name = {}\n", toml_str(display)));
     out.push_str(&format!("email = {}\n", toml_str(&args.email)));
     out.push_str("auth = \"password\"\n");
     if let Some(u) = &args.username {
@@ -201,6 +208,7 @@ mod tests {
 
     fn args(id: &str) -> AccountAddArgs {
         AccountAddArgs {
+            display_name: None,
             id: id.into(),
             email: "me@example.com".into(),
             imap_host: "imap.example.com".into(),

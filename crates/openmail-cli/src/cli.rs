@@ -161,6 +161,9 @@ pub struct AccountAddArgs {
     /// Login name when it differs from the address.
     #[arg(long)]
     pub username: Option<String>,
+    /// Sender name recipients see in From (default: the account id, which looks machine-made).
+    #[arg(long)]
+    pub display_name: Option<String>,
     #[arg(long)]
     pub smtp_host: Option<String>,
     #[arg(long, default_value_t = 465)]
