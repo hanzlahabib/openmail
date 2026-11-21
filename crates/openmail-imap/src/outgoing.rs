@@ -4,7 +4,7 @@
 use futures::TryStreamExt;
 use openmail_core::backend::{AttachmentSource, MailBackend, MailDrafts, SentFolder};
 use openmail_core::config::AccountConfig;
-use openmail_core::ids::{AccountId, MessageRef};
+use openmail_core::ids::{AccountId, MessageRef, reply_threading};
 use openmail_core::model::{Address, AttachmentData, DraftInput, Folder};
 use openmail_core::{Error, ErrorCode, Result};
 use openmail_smtp::builder::{build_message, generate_message_id};
@@ -18,8 +18,6 @@ use crate::mime::HeaderInfo;
 use crate::ops::{self, MAX_FETCH_BYTES, quote};
 use crate::pool::with_session;
 
-/// Only the newest ancestors are kept in References; long chains add size, not value.
-const MAX_REFERENCES: usize = 20;
 /// Slack on the encoded-size pre-check: base64 adds ~37% (line breaks included), so a
 /// part whose encoded size exceeds `cap * 3 / 2` cannot decode to `cap` bytes or fewer.
 const BASE64_ENCODED_SLACK_BYTES: usize = 4096;
@@ -48,30 +46,9 @@ pub fn pick_role(folders: &[Folder], role: &str) -> Option<String> {
         .map(|f| f.name.clone())
 }
 
-fn wrap_id(id: &str) -> Option<String> {
-    let id = id.trim().trim_start_matches('<').trim_end_matches('>');
-    let ok = id.contains('@')
-        && !id
-            .chars()
-            .any(|c| c.is_control() || c.is_whitespace() || c == '<' || c == '>');
-    ok.then(|| format!("<{id}>"))
-}
-
 /// In-Reply-To / References derived from the replied-to message's headers.
 fn threading(parent: &HeaderInfo) -> (Option<String>, Vec<String>) {
-    let parent_id = parent.message_id.as_deref().and_then(wrap_id);
-    let mut refs: Vec<String> = parent
-        .references
-        .iter()
-        .filter_map(|r| wrap_id(r))
-        .collect();
-    if let Some(id) = &parent_id
-        && !refs.contains(id)
-    {
-        refs.push(id.clone());
-    }
-    let skip = refs.len().saturating_sub(MAX_REFERENCES);
-    (parent_id, refs.split_off(skip))
+    reply_threading(None, &parent.references, parent.message_id.as_deref())
 }
 
 /// RFC 5322 bytes for a draft. Header injection is impossible by construction: the
@@ -81,10 +58,9 @@ fn threading(parent: &HeaderInfo) -> (Option<String>, Vec<String>) {
 fn build_draft(
     cfg: &AccountConfig,
     draft: &DraftInput,
-    parent: Option<&HeaderInfo>,
+    (in_reply_to, references): (Option<String>, Vec<String>),
     message_id: &str,
 ) -> Result<Vec<u8>> {
-    let (in_reply_to, references) = parent.map(threading).unwrap_or_default();
     let request = SendRequest {
         idempotency_key: DRAFT_KEY.into(),
         from: Address {
@@ -257,11 +233,11 @@ impl MailDrafts for ImapBackend {
         }
         // Not retried: a replayed APPEND after a lost reply would duplicate the draft.
         with_session!(self.pool(), account, false, |s| {
-            let parent = match &reply_to {
-                Some(r) => Some(parent_headers(s, r).await?),
-                None => None,
+            let thread = match &reply_to {
+                Some(r) => threading(&parent_headers(s, r).await?),
+                None => Default::default(),
             };
-            let raw = build_draft(&cfg, &draft, parent.as_ref(), &message_id)?;
+            let raw = build_draft(&cfg, &draft, thread, &message_id)?;
             append_and_locate(s, account, &folder, "(\\Draft)", &raw, &message_id).await
         })
     }
@@ -290,11 +266,20 @@ impl MailDrafts for ImapBackend {
             // Replacement order: validate target, store the new draft, only then remove
             // the old one — a failure in between can duplicate a draft but never lose it.
             open_existing_draft(s, reference).await?;
-            let parent = match &reply_to {
-                Some(r) => Some(parent_headers(s, r).await?),
-                None => None,
+            // A new `in_reply_to` re-targets the reply. Without one the draft keeps the thread
+            // it already has: dropping it would silently turn a reply into a new conversation.
+            let thread = match &reply_to {
+                Some(r) => threading(&parent_headers(s, r).await?),
+                None => {
+                    let old = parent_headers(s, reference).await?;
+                    reply_threading(
+                        old.in_reply_to.first().map(String::as_str),
+                        &old.references,
+                        None,
+                    )
+                }
             };
-            let raw = build_draft(&cfg, &draft, parent.as_ref(), &message_id)?;
+            let raw = build_draft(&cfg, &draft, thread, &message_id)?;
             let new_ref = append_and_locate(
                 s,
                 &reference.account,

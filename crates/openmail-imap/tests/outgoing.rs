@@ -152,6 +152,11 @@ async fn draft_create_update_delete_touch_only_the_draft() {
         b.get_message(&r2, 1000).await.unwrap().summary.subject.0,
         "Re: Question v2"
     );
+    // Updating without a new in_reply_to must keep the thread, not turn the reply into a
+    // new conversation (the observed production symptom).
+    let m2 = b.get_message(&r2, 10_000).await.unwrap();
+    assert_eq!(m2.in_reply_to.as_deref(), Some("q1@example.org"));
+    assert_eq!(m2.references, vec!["root@example.org", "q1@example.org"]);
     assert_eq!(
         count(&env, "Drafts").await,
         3,
@@ -410,4 +415,81 @@ async fn sent_copy_appears_seen_and_requires_send_permission() {
     let unconfigured = cfg(&env, |c| c.permissions.send = true);
     unconfigured.append_sent(&a, b"x".to_vec()).await.unwrap();
     assert_eq!(count(&env, "Sent").await, 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn reply_threading_survives_long_chains_and_bad_message_ids() {
+    let Some(env) = env().await else { return };
+    let mut admin = env.gm.admin("alice", PW).await;
+    admin.create("Drafts").await.unwrap();
+    let refs: String = (0..25).map(|i| format!("<r{i}@example.org> ")).collect();
+    let hdr = format!("References: {refs}<not an id> <bad>\r\n");
+    admin
+        .append(
+            "INBOX",
+            None,
+            None,
+            eml(
+                "Long thread",
+                "bob@example.org",
+                "tail@example.org",
+                &hdr,
+                "hi",
+            ),
+        )
+        .await
+        .unwrap();
+    // No Message-ID at all: the reply still threads on its References.
+    admin
+        .append(
+            "INBOX",
+            None,
+            None,
+            "From: bob@example.org\r\nTo: alice@localhost\r\nSubject: No id\r\n\r\nhi\r\n"
+                .to_string(),
+        )
+        .await
+        .unwrap();
+    let b = cfg(&env, drafts_cfg);
+    let a = id("alice");
+    let inbox = b.list_messages(&a, "INBOX", page()).await.unwrap();
+    let long = inbox
+        .items
+        .iter()
+        .find(|m| m.subject.0 == "Long thread")
+        .unwrap()
+        .reference
+        .clone();
+    let no_id = inbox
+        .items
+        .iter()
+        .find(|m| m.subject.0 == "No id")
+        .unwrap()
+        .reference
+        .clone();
+
+    let mut d = input("Re: Long thread");
+    d.in_reply_to = Some(long);
+    let r = b.create_draft(&a, d).await.unwrap();
+    let m = b.get_message(&r, 10_000).await.unwrap();
+    assert_eq!(m.in_reply_to.as_deref(), Some("tail@example.org"));
+    assert_eq!(m.references.len(), 20, "capped to the newest 20");
+    assert_eq!(
+        m.references.last().map(String::as_str),
+        Some("tail@example.org")
+    );
+    assert!(
+        m.references
+            .iter()
+            .all(|x| x.contains('@') && !x.contains(' '))
+    );
+
+    let mut d = input("Re: No id");
+    d.in_reply_to = Some(no_id);
+    let r = b.create_draft(&a, d).await.unwrap();
+    let m = b.get_message(&r, 10_000).await.unwrap();
+    assert_eq!(
+        m.in_reply_to, None,
+        "no Message-ID to reply to: plain draft, not an error"
+    );
 }

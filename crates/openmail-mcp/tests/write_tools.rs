@@ -1071,3 +1071,46 @@ async fn composed_send_validates_input_and_account_permission() {
     assert!(!r.outgoing.sent()[0].subject.contains('\n'));
     assert!(r.outgoing.sent()[0].bcc.is_empty());
 }
+
+/// Regression: a reply draft read back from IMAP carries bare IDs (`q1@example.org`), which the
+/// send path used to hand to the SMTP validator unchanged -> `INVALID_INPUT` on every reply.
+#[tokio::test]
+async fn reply_draft_sends_with_rfc5322_bracketed_threading_headers() {
+    let mut reply = draft_message(910, "bob@example.com", "Re: Plan", "Yes.");
+    reply.in_reply_to = Some("q1@example.org".into());
+    reply.references = vec![
+        "root@example.org".into(),
+        "<mid@example.org>".into(),
+        "garbage without brackets".into(),
+        "q1@example.org".into(),
+    ];
+    let r = rig(FakeBackend {
+        extra_messages: vec![reply],
+        ..FakeBackend::default()
+    })
+    .await;
+    let args = json!({ "message_ref": drafts_ref("work", 910).encode() });
+    let first = call(&r.client, "mail_send_approved", args.clone()).await;
+    let request_id = error_of(&first)["request_id"].as_str().unwrap().to_owned();
+    let mut with_approval = args;
+    with_approval["approval_id"] = json!(r.outgoing.owner_grants(&request_id));
+    let sent = ok(&call(&r.client, "mail_send_approved", with_approval).await);
+    assert_eq!(sent["sent"], true);
+
+    let req = &r.outgoing.sent()[0];
+    assert_eq!(req.in_reply_to.as_deref(), Some("<q1@example.org>"));
+    assert_eq!(
+        req.references,
+        vec![
+            "<root@example.org>",
+            "<mid@example.org>",
+            "<q1@example.org>"
+        ]
+    );
+    assert_eq!(
+        req.from.email, "me@work.example",
+        "sender stays the selected account"
+    );
+    req.validate(&openmail_smtp::request::SmtpLimits::default())
+        .expect("what the tool sends must pass the SMTP validator");
+}

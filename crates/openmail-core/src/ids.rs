@@ -136,3 +136,79 @@ mod tests {
         assert!(AccountId::new("ok_1-a").is_ok());
     }
 }
+
+/// Longest References chain kept on an outgoing message (the newest entries win).
+pub const MAX_REFERENCES: usize = 20;
+
+/// An RFC 5322 `<id@host>` token for a Message-ID as parsers hand it over. `mail-parser`
+/// returns IDs without angle brackets, headers on the wire carry them; both are accepted.
+/// Anything that could break out of the header (whitespace, controls, brackets inside) or
+/// has no `@` is rejected, because these values come from mail we did not write.
+#[must_use]
+pub fn wrap_message_id(id: &str) -> Option<String> {
+    let id = id.trim().trim_start_matches('<').trim_end_matches('>');
+    let ok = id.len() <= 998
+        && id.contains('@')
+        && !id
+            .chars()
+            .any(|c| c.is_control() || c.is_whitespace() || c == '<' || c == '>');
+    ok.then(|| format!("<{id}>"))
+}
+
+/// Normalised `(In-Reply-To, References)` for a reply: valid IDs only (a malformed entry is
+/// dropped, never allowed to discard the rest of the thread), de-duplicated, capped to the
+/// newest [`MAX_REFERENCES`]. `parent` is appended to the chain when it is not already there.
+#[must_use]
+pub fn reply_threading(
+    in_reply_to: Option<&str>,
+    references: &[String],
+    parent: Option<&str>,
+) -> (Option<String>, Vec<String>) {
+    let mut refs: Vec<String> = Vec::new();
+    for id in references.iter().filter_map(|r| wrap_message_id(r)) {
+        if !refs.contains(&id) {
+            refs.push(id);
+        }
+    }
+    let parent = parent.and_then(wrap_message_id);
+    if let Some(p) = &parent
+        && !refs.contains(p)
+    {
+        refs.push(p.clone());
+    }
+    let irt = parent
+        .or_else(|| in_reply_to.and_then(wrap_message_id))
+        .or_else(|| refs.last().cloned());
+    let skip = refs.len().saturating_sub(MAX_REFERENCES);
+    (irt, refs.split_off(skip))
+}
+
+#[cfg(test)]
+mod threading_tests {
+    use super::*;
+
+    #[test]
+    fn wraps_bare_and_bracketed_ids_and_rejects_unsafe_ones() {
+        assert_eq!(wrap_message_id("a@x.org").as_deref(), Some("<a@x.org>"));
+        assert_eq!(wrap_message_id("<a@x.org>").as_deref(), Some("<a@x.org>"));
+        assert_eq!(wrap_message_id("junk"), None);
+        assert_eq!(wrap_message_id("a@x.org\r\nBcc: v@evil.test"), None);
+        assert_eq!(wrap_message_id("<a@x> <b@x>"), None);
+    }
+
+    #[test]
+    fn reply_threading_keeps_valid_entries_dedupes_and_caps() {
+        let refs: Vec<String> = (0..25).map(|i| format!("m{i}@x.org")).collect();
+        let (irt, out) = reply_threading(None, &refs, Some("parent@x.org"));
+        assert_eq!(irt.as_deref(), Some("<parent@x.org>"));
+        assert_eq!(out.len(), MAX_REFERENCES);
+        assert_eq!(out.last().map(String::as_str), Some("<parent@x.org>"));
+        let (irt, out) = reply_threading(
+            Some("c@x.org"),
+            &["junk".into(), "<a@x.org>".into(), "a@x.org".into()],
+            None,
+        );
+        assert_eq!(irt.as_deref(), Some("<c@x.org>"));
+        assert_eq!(out, vec!["<a@x.org>"]);
+    }
+}

@@ -5,7 +5,7 @@
 use std::sync::Mutex;
 
 use openmail_core::config::AccountConfig;
-use openmail_core::ids::MessageRef;
+use openmail_core::ids::{MessageRef, reply_threading};
 use openmail_core::model::{Address, AttachmentMeta, Message};
 use openmail_core::{Error, ErrorCode};
 use openmail_security::{Action, Principal};
@@ -256,6 +256,10 @@ impl<B: FullBackend> OpenMailServer<B> {
         self.ensure_in_drafts(cfg, &r).await?;
         let msg = self.load_source(cfg, &r).await?;
         let attachments = self.collect_attachments(cfg, &r, &msg.attachments).await?;
+        // The parser hands IDs back without angle brackets; the outgoing request wants RFC 5322
+        // `<id@host>` tokens. Entries that are not valid IDs are dropped, never fatal.
+        let (in_reply_to, references) =
+            reply_threading(msg.in_reply_to.as_deref(), &msg.references, None);
         let request = SendRequest {
             idempotency_key: String::new(),
             from: own_address(cfg),
@@ -267,8 +271,8 @@ impl<B: FullBackend> OpenMailServer<B> {
             text: msg.body.text.map(|t| t.0),
             html: msg.body.html_sanitized.map(|h| h.0),
             attachments,
-            in_reply_to: msg.in_reply_to,
-            references: msg.references,
+            in_reply_to,
+            references,
         };
         self.deliver(p, cfg, &r, request, approval, false).await
     }
