@@ -1,5 +1,7 @@
 # OpenMail MCP
 
+[![M8ven Score](https://m8ven.ai/badge/mcp/hanzlahabib-openmail-4pyuq9?v=92bffff8cac6641e2b76bcd82438ee32)](https://m8ven.ai/mcp/hanzlahabib-openmail-4pyuq9?s=readme)
+
 A local-first, security-first [Model Context Protocol](https://modelcontextprotocol.io) server for email.
 It lets an AI client read, search and (when you allow it) organize and draft mail over plain IMAP/SMTP,
 with your credentials and your mail staying on your machine.
