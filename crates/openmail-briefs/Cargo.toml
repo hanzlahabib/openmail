@@ -24,7 +24,7 @@ serde_json.workspace = true
 rusqlite = { version = "0.43", features = ["bundled"] }
 chrono = "0.4.45"
 chrono-tz = "0.10.4"
-croner = "4.0.3"
+croner = "5.0.0"
 futures-util = "0.3.34"
 regex = "1.13.2"
 
